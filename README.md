@@ -56,6 +56,7 @@ A 股这个数接近 97%，所以除了「命中率 92%」这种数字，还会�
 ├── export_unadj.py    实验性对照口径：不复权价 + 不过滤可交易域（仅进 lab）
 ├── assets/
 │   ├── backtest.js    回测核心的 JS 镜像，与 backtest.py 逐函数对应
+│   ├── common.js      仪表盘和参数实验室共用的前端小工具
 │   ├── chart_engine.js  轻量 SVG 图表引擎
 │   └── report.css
 ├── docs/              GitHub Pages：仪表盘和参数实验室的快照

@@ -9,8 +9,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import config
-
 ASSETS = Path(__file__).parent / 'assets'
 
 # 回撤等级 → 颜色。键必须和 backtest.grade() 的返回值一致
@@ -24,6 +22,13 @@ def _pct(x, d=0):
 
 def _asset(name: str) -> str:
     return (ASSETS / name).read_text(encoding='utf-8')
+
+
+def toggle_buttons(payloads: dict) -> str:
+    """策略切换按钮的 HTML（第一个默认选中）。"""
+    return '\n'.join(
+        f'<button class="toggle-btn{" active" if i == 0 else ""}" data-cfg="{k}" type="button">'
+        f'{payloads[k]["strategy"]}</button>' for i, k in enumerate(payloads))
 
 
 def _head(title: str, extra_css: str = '') -> str:
@@ -66,12 +71,8 @@ DASHBOARD_CSS = """
 def build_dashboard(payloads: dict, out_path: Path) -> Path:
     """payloads: {策略键: export_payload() 的结果}，写出 dashboard.html。"""
     keys = list(payloads)
-    first = payloads[keys[0]]
-    meta = first['meta']
 
-    btns = '\n'.join(
-        f'<button class="toggle-btn{" active" if i == 0 else ""}" data-cfg="{k}" type="button">'
-        f'{payloads[k]["strategy"]}</button>' for i, k in enumerate(keys))
+    btns = toggle_buttons(payloads)
 
     # 策略对比：泳道图展示各策略有效集群的时间分布，±TOL 个交易日内重叠视为同一事件。
     # 日期轴用所有策略日期的并集（各策略起点不同）。
@@ -234,6 +235,7 @@ def build_dashboard(payloads: dict, out_path: Path) -> Path:
 
 <script>{_asset('chart_engine.js')}</script>
 <script>{_asset('backtest.js')}</script>
+<script>{_asset('common.js')}</script>
 <script>
 window.__DATA__ = {json.dumps(payloads, ensure_ascii=False)};
 window.__LEVEL_COLOR__ = {json.dumps(LEVEL_COLOR, ensure_ascii=False)};
@@ -250,10 +252,8 @@ window.__LEVEL_COLOR__ = {json.dumps(LEVEL_COLOR, ensure_ascii=False)};
 DASHBOARD_JS = r"""
 (function(){
   const D = window.__DATA__, LC = window.__LEVEL_COLOR__;
-  const TAG = {'较大回撤':'tag-red','中型回调':'tag-orange','小幅回调':'tag-amber',
-               '无显著回撤':'tag-teal','近期信号':'tag-blue'};
+  const {TAG, pct} = window.HO;
   let charts = [];
-  const pct = (x,d) => (x===null||x===undefined) ? '—' : (x*100).toFixed(d===undefined?1:d)+'%';
 
 
   function render(key){
@@ -317,18 +317,9 @@ DASHBOARD_JS = r"""
       `触发时建议提升防御仓位而非直接卖出。存在"假警报"（如流动性宽松期），需结合宏观环境综合判断。` +
       `当前可评估集群 ${m.n_gradable} 个，样本量有限，结论不宜过度外推。`;
 
-    // 走势 —— 逐日标注: 每个信号日一个点, 颜色按它自己的回撤等级;
-    // 属于某个有效集群的额外用三角形强调, 孤立的单点信号用小圆点。
+    // 走势与逐日信号标注
     document.getElementById('trend-title').textContent = d.index_source + ' 走势与信号标注';
-    const clusterById = {};
-    d.clusters.filter(c => c.type==='有效集群').forEach(c => { clusterById[c.id] = c; });
-    const markers = (d.signal_days || []).map(sd => {
-      const c = sd.cluster_id != null ? clusterById[sd.cluster_id] : null;
-      return {index: sd.index, color: LC[sd.level]||'#5C8AE6',
-        shape: c ? 'triangle' : 'dot', r: c ? 6 : 3,
-        label: c ? `集群#${c.id} · ${sd.level}` : `单点信号 · ${sd.level}`,
-        sublabel: c ? `${c.start} ~ ${c.end} · ${c.count}次信号` : sd.date};
-    });
+    const markers = HO.signalMarkers(d.signal_days, d.clusters, LC);
     charts.push(new CE.TimeSeriesChart(document.getElementById('chart-trend'), {
       title: d.index_source, subtitle:'可滚轮缩放/拖拽 · 三角=有效集群 圆点=单点信号', dates:S.dates, height:340,
       series:[{label:d.index_source, color:'#1B2233', data:S.index_close, width:1.5}],

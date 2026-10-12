@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 import config
-from viz import _asset, _head, LEVEL_COLOR
+from viz import _asset, _head, toggle_buttons, LEVEL_COLOR
 
 # 参数实验室专用样式
 LAB_CSS = """
@@ -54,10 +54,7 @@ LAB_CSS = """
 
 def build_lab(payloads: dict, out_path: Path) -> Path:
     """payloads: {键: 导出的 JSON}，写出 lab.html。"""
-    keys = list(payloads)
-    btns = '\n'.join(
-        f'<button class="toggle-btn{" active" if i == 0 else ""}" data-cfg="{k}" type="button">'
-        f'{payloads[k]["strategy"]}</button>' for i, k in enumerate(keys))
+    btns = toggle_buttons(payloads)
 
     html = _head('兴登堡预兆 · 参数实验室', LAB_CSS) + f"""
 <nav class="topnav">
@@ -143,6 +140,7 @@ def build_lab(payloads: dict, out_path: Path) -> Path:
 
 <script>{_asset('chart_engine.js')}</script>
 <script>{_asset('backtest.js')}</script>
+<script>{_asset('common.js')}</script>
 <script>
 window.__DATA__ = {json.dumps(payloads, ensure_ascii=False)};
 window.__SLIDERS__ = {json.dumps(config.SLIDER_SPECS, ensure_ascii=False)};
@@ -160,9 +158,7 @@ window.__LEVEL_COLOR__ = {json.dumps(LEVEL_COLOR, ensure_ascii=False)};
 LAB_JS = r"""
 (function(){
   const D = window.__DATA__, SPECS = window.__SLIDERS__, LC = window.__LEVEL_COLOR__;
-  const TAG = {'较大回撤':'tag-red','中型回调':'tag-orange','小幅回调':'tag-amber',
-               '无显著回撤':'tag-teal','近期信号':'tag-blue'};
-  const pct = (x,d) => (x===null||x===undefined) ? '—' : (x*100).toFixed(d===undefined?1:d)+'%';
+  const {TAG, pct} = window.HO;
   let key = Object.keys(D)[0];
   let params = null, baseline = null, charts = [];
 
@@ -244,17 +240,7 @@ LAB_JS = r"""
 
     charts.forEach(c => c.destroy && c.destroy());
     charts = [];
-    // 逐日标注: 每个信号日一个点, 属于有效集群的额外用三角形强调
-    // (跟 dashboard 的走势图是同一套画法, 不要只标集群首日)
-    const clusterById = {};
-    r.clusters.filter(c => c.type==='有效集群').forEach(c => { clusterById[c.id] = c; });
-    const markers = (r.signalDays || []).map(sd => {
-      const c = sd.cluster_id != null ? clusterById[sd.cluster_id] : null;
-      return {index: sd.index, color: LC[sd.level]||'#5C8AE6',
-        shape: c ? 'triangle' : 'dot', r: c ? 6 : 3,
-        label: c ? `集群#${c.id} · ${sd.level}` : `单点信号 · ${sd.level}`,
-        sublabel: c ? `${c.start} ~ ${c.end} · ${c.count}次信号` : sd.date};
-    });
+    const markers = HO.signalMarkers(r.signalDays, r.clusters, LC);
     const gap = S.index_close.findIndex(v => v !== null);
     const bands = gap>0 ? [{i0:0,i1:gap,color:'#5C8AE6',opacity:0.10,label:'指数无数据'}] : [];
 

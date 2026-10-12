@@ -81,13 +81,6 @@ class Panel:
         drop = sorted(set(drop_bad) | set(drop_board) | set(drop_exch))
         if not drop:
             return px
-        msg = []
-        if drop_bad:
-            msg.append(f'非股票代码 {len(drop_bad)} 只 (如 {drop_bad[:3]})')
-        if drop_board:
-            msg.append(f'{"/".join(self.exclude_boards)} 板块 {len(drop_board)} 只')
-        if drop_exch:
-            msg.append(f'非 {"/".join(self.include_exchanges)} 交易所 {len(drop_exch)} 只')
         out = px.drop(columns=drop)
         if out.shape[1] == 0:
             raise ValueError(

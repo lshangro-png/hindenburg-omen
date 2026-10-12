@@ -321,8 +321,7 @@ def summarize(df: pd.DataFrame, cl: pd.DataFrame, p: Params) -> dict:
             cluster_box[w] = {'n': int(len(ss)), 'median': float(ss.median()),
                               'q1': float(ss.quantile(0.25)),
                               'q3': float(ss.quantile(0.75)),
-                              'min': float(ss.min()), 'max': float(ss.max()),
-                              'worst': float(ss.min()), 'best': float(ss.max())}
+                              'min': float(ss.min()), 'max': float(ss.max())}
 
     status = current_status(df, cl, p)
 

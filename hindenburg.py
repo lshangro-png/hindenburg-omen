@@ -35,7 +35,7 @@ class Omen:
     一个策略的完整回测：compute() 算中间序列和信号 → run() 聚类并评估 → report() 打印。
     """
     def __init__(self, strat: Strategy, panel: Panel, store: IndexStore,
-                 cache: Optional[BreadthCache] = None):
+                 cache: BreadthCache):
         self.s, self.panel, self.store, self.cache = strat, panel, store, cache
         self.stats: Optional[pd.DataFrame] = None
         self.index_full: Optional[pd.Series] = None   # 含预热段的指数收盘价（条件①用）
@@ -50,16 +50,7 @@ class Omen:
                   mc_norm=p.mc_norm, min_coverage=p.min_coverage,
                   exclude_boards=p.exclude_boards,
                   include_exchanges=p.include_exchanges)
-        if self.cache:
-            df = self.cache.get(self.panel, start, end, s.universe_index, **kw).copy()
-        else:
-            px, valid = self.panel.universe(start, end, s.universe_index,
-                                            warmup=p.warmup,
-                                            min_coverage=p.min_coverage)
-            df = new_high_low(px, valid, p.hl_window, p.hl_min_periods)
-            df['mcclellan'] = mcclellan(px, valid, p.ema_short, p.ema_long, p.mc_norm)
-            df['eq_weight_index'] = Panel.equal_weight_index(px, valid)
-            df = df.loc[start:]
+        df = self.cache.get(self.panel, start, end, s.universe_index, **kw).copy()
 
         pre_start = (pd.Timestamp(start)
                      - pd.Timedelta(days=int(config.INDEX_PREHEAT * 1.6))).strftime('%Y-%m-%d')
@@ -511,16 +502,13 @@ def cmd_compare():
                               config.START, end, warmup=p.warmup,
                               min_coverage=p.min_coverage)
         bd = new_high_low(px, valid, p.hl_window, p.hl_min_periods)
-        idx = (bench.reindex(px.index).ffill() if bench is not None
-               else Panel.equal_weight_index(px, valid))
-        ma = idx.rolling(p.ma_period).mean()
-        c2 = (bd.high_ratio >= p.threshold) & (bd.low_ratio >= p.threshold)
-        sig = ((ma > ma.shift(p.ma_lookback)) & c2
-               & (bd.new_high <= bd.new_low * p.hl_ratio)
-               & (mcclellan(px, valid, p.ema_short, p.ema_long, p.mc_norm) < 0))
-        sig = sig.loc[config.START:]
+        bd['mcclellan'] = mcclellan(px, valid, p.ema_short, p.ema_long, p.mc_norm)
+        bd['index_close'] = (bench.reindex(px.index).ffill() if bench is not None
+                             else Panel.equal_weight_index(px, valid))
+        out = build_signals(bd, p).loc[config.START:]
+        sig = out.signal
         res.append({'label': label, 'n': valid.sum(axis=1).mean(),
-                    'lo': bd.low_ratio.median(), 'c2': int(c2.loc[config.START:].sum()),
+                    'lo': bd.low_ratio.median(), 'c2': int(out.cond2.sum()),
                     'sig': int(sig.sum()), 'dates': set(sig[sig].index)})
 
     print(f'\n\n{"="*70}\n规则对比\n{"="*70}')
