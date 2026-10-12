@@ -4,6 +4,10 @@
         滚轮缩放 + 拖拽平移(仅时间序列图), 悬浮提示, 响应式重绘
    ============================================================ */
 
+// 界面文字：页面加载了 i18n.js 就按当前语言取，否则用中文
+const CE_TEXT = { ce_reset: '重置视图', ce_hint: '滚轮缩放 · 拖拽平移', ce_max: '最大', ce_median: '中位', ce_min: '最小' };
+const ceT = (k) => (window.I18N ? window.I18N.t(k) : CE_TEXT[k]);
+
 window.CE = (() => {
   const SVGNS = 'http://www.w3.org/2000/svg';
 
@@ -76,8 +80,8 @@ window.CE = (() => {
       }
       const bar = document.createElement('div');
       bar.className = 'ce-toolbar';
-      bar.innerHTML = `<button class="ce-btn ce-reset" type="button">重置视图</button>
-        <span class="ce-hint">滚轮缩放 · 拖拽平移</span>`;
+      bar.innerHTML = `<button class="ce-btn ce-reset" type="button">${ceT('ce_reset')}</button>
+        <span class="ce-hint">${ceT('ce_hint')}</span>`;
       this.root.appendChild(bar);
       bar.querySelector('.ce-reset').addEventListener('click', () => { this.view = { i0: 0, i1: this.n - 1 }; this.render(); });
 
@@ -392,7 +396,7 @@ window.CE = (() => {
         this.root.appendChild(h);
       }
       const bar = document.createElement('div'); bar.className = 'ce-toolbar';
-      bar.innerHTML = `<button class="ce-btn ce-reset" type="button">重置视图</button><span class="ce-hint">滚轮缩放 · 拖拽平移</span>`;
+      bar.innerHTML = `<button class="ce-btn ce-reset" type="button">${ceT('ce_reset')}</button><span class="ce-hint">${ceT('ce_hint')}</span>`;
       this.root.appendChild(bar);
       bar.querySelector('.ce-reset').addEventListener('click', () => { this.view = { i0: 0, i1: this.n - 1 }; this.render(); });
       const wrap = document.createElement('div'); wrap.className = 'ce-svgwrap'; wrap.style.position = 'relative';
@@ -562,11 +566,11 @@ window.CE = (() => {
         grp.style.cursor = 'pointer';
         grp.addEventListener('pointerenter', (e) => {
           this.tooltip.innerHTML = `<div class="ce-tt-date">${g.label} (n=${g.n})</div>
-            <div class="ce-tt-row">最大: <b>${this.yFormat(g.max)}</b></div>
+            <div class="ce-tt-row">${ceT('ce_max')}: <b>${this.yFormat(g.max)}</b></div>
             <div class="ce-tt-row">Q3: <b>${this.yFormat(g.q3)}</b></div>
-            <div class="ce-tt-row">中位: <b>${this.yFormat(g.median)}</b></div>
+            <div class="ce-tt-row">${ceT('ce_median')}: <b>${this.yFormat(g.median)}</b></div>
             <div class="ce-tt-row">Q1: <b>${this.yFormat(g.q1)}</b></div>
-            <div class="ce-tt-row">最小: <b>${this.yFormat(g.min)}</b></div>`;
+            <div class="ce-tt-row">${ceT('ce_min')}: <b>${this.yFormat(g.min)}</b></div>`;
           this.tooltip.style.opacity = 1; this._moveTip(e);
         });
         grp.addEventListener('pointermove', (e) => this._moveTip(e));

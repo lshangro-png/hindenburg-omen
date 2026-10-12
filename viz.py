@@ -1,8 +1,10 @@
 """
-生成回测仪表盘 dashboard.html：固定参数下的完整结果，可切换策略，并有策略对比。
+生成回测仪表盘：固定参数下的完整结果，可切换策略，并有策略对比。
 
+同一份代码生成中英两个版本：dashboard.html（中文）和 dashboard_en.html（英文）。
+页面上的文字都在 assets/i18n.js 的对照表里，这里只负责页面结构和数据。
 页面是单个自包含的 HTML，图表引擎和样式来自 assets/，数据以 JSON 内嵌。
-参数实验室 lab.html 由 lab.py 单独生成。
+参数实验室由 lab.py 单独生成。
 """
 from __future__ import annotations
 
@@ -10,10 +12,22 @@ import json
 from pathlib import Path
 
 ASSETS = Path(__file__).parent / 'assets'
+LANGS = ('zh', 'en')
 
 # 回撤等级 → 颜色。键必须和 backtest.grade() 的返回值一致
 LEVEL_COLOR = {'较大回撤': '#C64B37', '中型回调': '#E0904A', '小幅回调': '#D9A441',
                '无显著回撤': '#4FA98C', '近期信号': '#5C8AE6'}
+
+# 网页标题（<title> 在 JS 运行前就要有，所以单独放在这里）
+TITLES = {
+    'dashboard': {'zh': '兴登堡预兆 · 回测仪表盘', 'en': 'Hindenburg Omen · Backtest Dashboard'},
+    'lab': {'zh': '兴登堡预兆 · 参数实验室', 'en': 'Hindenburg Omen · Parameter Lab'},
+}
+
+
+def page_name(kind: str, lang: str) -> str:
+    """页面文件名：dashboard.html / dashboard_en.html / lab.html / lab_en.html"""
+    return f'{kind}.html' if lang == 'zh' else f'{kind}_{lang}.html'
 
 
 def _pct(x, d=0):
@@ -25,16 +39,25 @@ def _asset(name: str) -> str:
 
 
 def toggle_buttons(payloads: dict) -> str:
-    """策略切换按钮的 HTML（第一个默认选中）。"""
+    """策略切换按钮的 HTML（第一个默认选中；按钮文字由 i18n.js 按语言填充）。"""
     return '\n'.join(
-        f'<button class="toggle-btn{" active" if i == 0 else ""}" data-cfg="{k}" type="button">'
-        f'{payloads[k]["strategy"]}</button>' for i, k in enumerate(payloads))
+        f'<button class="toggle-btn{" active" if i == 0 else ""}" data-cfg="{k}" type="button" '
+        f'data-v="{payloads[k]["strategy"]}">{payloads[k]["strategy"]}</button>'
+        for i, k in enumerate(payloads))
 
 
-def _head(title: str, extra_css: str = '') -> str:
+def lang_link(kind: str, lang: str) -> str:
+    """导航栏右侧切换到另一种语言的链接。"""
+    other = 'en' if lang == 'zh' else 'zh'
+    return (f'<a class="lang-switch" href="{page_name(kind, other)}" '
+            f'data-i18n="lang_switch"></a>')
+
+
+def _head(title: str, extra_css: str = '', lang: str = 'zh') -> str:
     """HTML 头部：字体、内联 report.css 和额外样式。"""
+    html_lang = 'zh-CN' if lang == 'zh' else 'en'
     return f"""<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="{html_lang}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -45,9 +68,28 @@ def _head(title: str, extra_css: str = '') -> str:
 <style>
 {_asset('report.css')}
 {extra_css}
+.topnav .lang-switch{{margin-left:auto;}}
 </style>
 </head>
 <body>"""
+
+
+def _scripts(lang: str, data_js: str, page_js: str) -> str:
+    """页面末尾的脚本：先定语言和对照表，再加载图表引擎、回测镜像、共用工具和页面逻辑。"""
+    return f"""
+<script>window.__LANG__ = {json.dumps(lang)};</script>
+<script>{_asset('i18n.js')}</script>
+<script>{_asset('chart_engine.js')}</script>
+<script>{_asset('backtest.js')}</script>
+<script>{_asset('common.js')}</script>
+<script>
+{data_js}
+</script>
+<script>
+I18N.apply();
+{page_js}
+</script>
+</body></html>"""
 
 
 # 仪表盘专用样式（策略切换按钮、对比表）
@@ -68,20 +110,15 @@ DASHBOARD_CSS = """
 # 仪表盘
 # =====================================================================
 
-def build_dashboard(payloads: dict, out_path: Path) -> Path:
-    """payloads: {策略键: export_payload() 的结果}，写出 dashboard.html。"""
+def build_dashboard(payloads: dict, out_path: Path, lang: str = 'zh') -> Path:
+    """payloads: {策略键: export_payload() 的结果}，按 lang 写出仪表盘。"""
     keys = list(payloads)
 
     btns = toggle_buttons(payloads)
 
     # 策略对比：泳道图展示各策略有效集群的时间分布，±TOL 个交易日内重叠视为同一事件。
-    # 日期轴用所有策略日期的并集（各策略起点不同）。
-    #
-    # 日期轴必须用所有策略的并集, 不能用某一个策略的。各策略起点不同
-    # (中证全指 2011-08 才发布, 上证综指能回到 2000), 若拿其中一个当轴,
-    # 另一个早于该起点的集群会在 idx 里查不到 —— 匹配时被静默跳过, 画图时
-    # 又被 .get(..., 0) 兜底成索引 0, 全堆在图最左端。那是错误的图, 不是
-    # 少画几个点而已。
+    # 日期轴必须用所有策略日期的并集（各策略起点不同），否则早于某策略起点的集群
+    # 会找不到位置。
     cmp_section = ''
     if len(keys) >= 2:
         all_dates = sorted({d for k in keys for d in payloads[k]['series']['dates']})
@@ -99,10 +136,11 @@ def build_dashboard(payloads: dict, out_path: Path) -> Path:
         # 裁掉最早集群之前的空白，左侧留 60 个交易日
         first_i = min((idx[c['start']] for k in keys for c in valid_of(k)
                        if c['start'] in idx), default=0)
-        clip = max(0, first_i - 60)          # 留 60 个交易日余量, 不要贴边
+        clip = max(0, first_i - 60)
         all_dates = all_dates[clip:]
         idx = {d: i - clip for d, i in idx.items() if i >= clip}
 
+        # 泳道数据只放原始字段，显示文字由页面 JS 按语言拼出
         lane_colors = ['#D9A441', '#5C8AE6', '#4FA98C', '#C64B37', '#E0904A']
         lanes, per_key = [], {}
         for li, k in enumerate(keys):
@@ -113,8 +151,8 @@ def build_dashboard(payloads: dict, out_path: Path) -> Path:
                     continue
                 items.append(dict(id=c['id'], i0=idx[c['start']], i1=idx[c['end']],
                                   color=LEVEL_COLOR.get(c['level'], '#5C8AE6'),
-                                  label=f'{pk["strategy"]} #{c["id"]} · {c["level"]}',
-                                  sublabel=f'{c["start"]} ~ {c["end"]} · {c["count"]}次信号'))
+                                  strategy=pk['strategy'], level=c['level'],
+                                  start=c['start'], end=c['end'], count=c['count']))
             per_key[k] = items
             lanes.append(dict(label=pk['strategy'],
                               color=lane_colors[li % len(lane_colors)], items=items))
@@ -133,47 +171,48 @@ def build_dashboard(payloads: dict, out_path: Path) -> Path:
             # JSON 往返后 int 键会变成字符串，两种都试
             return (ba.get(str(gw)) or ba.get(gw) or {}).get(field)
 
-        head_cells = ''.join(f'<th>{payloads[k]["strategy"]}</th>' for k in keys)
+        head_cells = ''.join(f'<th data-v="{payloads[k]["strategy"]}"></th>' for k in keys)
         cmp_metrics = [
-            ('回测区间', lambda pk: f'{pk["meta"]["start"]} ~ {pk["meta"]["end"]}'),
-            ('趋势基准', lambda pk: pk['index_source']),
-            ('有效集群数', lambda pk: pk['meta']['n_clusters_valid']),
-            ('中型命中率', lambda pk: _pct(pk['meta']['hit_rate'])),
-            ('中型基准率', lambda pk: _pct(_base_of(pk, 'p_mid'))),
-            ('较大命中率', lambda pk: _pct(pk['meta'].get('hit_rate_big'))),
-            ('较大基准率', lambda pk: _pct(_base_of(pk, 'p_big'))),
+            ('cmp_period', lambda pk: f'{pk["meta"]["start"]} ~ {pk["meta"]["end"]}'),
+            ('cmp_bench', lambda pk: f'<span data-v="{pk["index_source"]}"></span>'),
+            ('cmp_nvalid', lambda pk: pk['meta']['n_clusters_valid']),
+            ('cmp_hit_mid', lambda pk: _pct(pk['meta']['hit_rate'])),
+            ('cmp_base_mid', lambda pk: _pct(_base_of(pk, 'p_mid'))),
+            ('cmp_hit_big', lambda pk: _pct(pk['meta'].get('hit_rate_big'))),
+            ('cmp_base_big', lambda pk: _pct(_base_of(pk, 'p_big'))),
         ]
         cmp_rows = '\n'.join(
-            f'<tr><td class="strong">{label}</td>'
+            f'<tr><td class="strong" data-i18n="{key}"></td>'
             + ''.join(f'<td class="num">{fn(payloads[k])}</td>' for k in keys)
-            + '</tr>' for label, fn in cmp_metrics)
+            + '</tr>' for key, fn in cmp_metrics)
 
         cmp_section = f"""
 <section class="section" id="compare">
-  <div class="section-head"><span class="section-num">六</span><h2>策略对比</h2></div>
-  <p class="section-sub">泳道图对比各策略有效集群的时间分布，虚线连接相邻泳道中时间重叠的集群（容忍 ±{TOL} 个交易日）。
-  各策略回测区间不同（见下表），且<b>回撤是各自基准指数的回撤</b>，命中率不能跨策略直接比大小。</p>
+  <div class="section-head"><span class="section-num" data-i18n="num6"></span><h2 data-i18n="sec_compare"></h2></div>
+  <p class="section-sub" data-i18n="compare_sub" data-arg="{TOL}"></p>
   <div id="chart-timeline"></div>
   <div style="height:16px"></div>
   <div class="tbl-wrap"><div class="tbl-scroll"><table class="rpt cmp-tbl">
-    <thead><tr><th>指标</th>{head_cells}</tr></thead>
+    <thead><tr><th data-i18n="cmp_metric"></th>{head_cells}</tr></thead>
     <tbody>{cmp_rows}</tbody></table></div></div>
 </section>
 <script>window.__TIMELINE__ = {json.dumps(dict(dates=all_dates, lanes=lanes, links=links), ensure_ascii=False)};</script>
 """
 
-    html = _head('兴登堡预兆 · 回测仪表盘', DASHBOARD_CSS) + f"""
+    html = _head(TITLES['dashboard'][lang], DASHBOARD_CSS, lang) + f"""
 <nav class="topnav">
   <span class="brand">HINDENBURG·DASHBOARD</span>
-  <a href="#summary">核心结论</a><a href="#trend">指数走势</a>
-  <a href="#panel">四条件面板</a><a href="#history">信号回溯</a>
-  <a href="#stats">有效性统计</a>{'<a href="#compare">策略对比</a>' if cmp_section else ''}
+  <a href="#summary" data-i18n="nav_summary"></a><a href="#trend" data-i18n="nav_trend"></a>
+  <a href="#panel" data-i18n="nav_panel"></a><a href="#history" data-i18n="nav_history"></a>
+  <a href="#stats" data-i18n="nav_stats"></a>{'<a href="#compare" data-i18n="nav_compare"></a>' if cmp_section else ''}
+  <a href="{page_name('lab', lang)}">LAB</a>
+  {lang_link('dashboard', lang)}
 </nav>
 
 <header class="hero">
-  <h1>兴登堡预兆<br>回测<em>仪表盘</em></h1>
+  <h1 data-i18n="hero_dash"></h1>
   <div class="meta-row">
-    <span><b>样本区间</b>：<span id="hero-range"></span></span>
+    <span><b data-i18n="sample_period"></b><span data-i18n="colon"></span><span id="hero-range"></span></span>
   </div>
 </header>
 
@@ -185,27 +224,27 @@ def build_dashboard(payloads: dict, out_path: Path) -> Path:
 </div>
 
 <section class="section" id="status">
-  <div class="section-head"><span class="section-num">·</span><h2>当前状态</h2></div>
-  <p class="section-sub">现状快照，不是回测统计</p>
+  <div class="section-head"><span class="section-num">·</span><h2 data-i18n="sec_status"></h2></div>
+  <p class="section-sub" data-i18n="sec_status_sub"></p>
   <div class="stat-grid" id="status-grid"></div>
 </section>
 
 <section class="section" id="summary">
-  <div class="section-head"><span class="section-num">一</span><h2>核心结论</h2></div>
+  <div class="section-head"><span class="section-num" data-i18n="num1"></span><h2 data-i18n="sec_summary"></h2></div>
   <div class="stat-grid" id="stat-grid"></div>
-  <p class="section-sub" style="margin-bottom:10px">集群信号后续回撤等级分布</p>
+  <p class="section-sub" style="margin-bottom:10px" data-i18n="sec_summary_sub"></p>
   <div class="pill-row" id="pill-row"></div>
   <div class="section-note warn" id="summary-note"></div>
 </section>
 
 <section class="section" id="trend">
-  <div class="section-head"><span class="section-num">二</span><h2 id="trend-title">指数走势与信号标注</h2></div>
-  <p class="section-sub">按后续回撤分级着色；三角=有效集群，圆点=单点信号</p>
+  <div class="section-head"><span class="section-num" data-i18n="num2"></span><h2 id="trend-title"></h2></div>
+  <p class="section-sub" data-i18n="sec_trend_sub"></p>
   <div id="chart-trend"></div>
 </section>
 
 <section class="section" id="panel">
-  <div class="section-head"><span class="section-num">三</span><h2>四条件监控面板</h2></div>
+  <div class="section-head"><span class="section-num" data-i18n="num3"></span><h2 data-i18n="sec_panel"></h2></div>
   <p class="section-sub" id="panel-sub"></p>
   <div class="chart-grid cols-2-2">
     <div id="chart-cond1"></div><div id="chart-cond2"></div>
@@ -214,15 +253,15 @@ def build_dashboard(payloads: dict, out_path: Path) -> Path:
 </section>
 
 <section class="section" id="history">
-  <div class="section-head"><span class="section-num">四</span><h2>信号历史回溯表</h2></div>
+  <div class="section-head"><span class="section-num" data-i18n="num4"></span><h2 data-i18n="sec_history"></h2></div>
   <p class="section-sub" id="history-sub"></p>
   <div class="tbl-wrap"><div class="tbl-scroll"><table class="rpt">
-    <thead><tr><th>集群</th><th>预警区间</th><th>特征数</th><th>类型</th><th id="history-ddhead">回撤</th><th>等级</th></tr></thead>
+    <thead><tr><th data-i18n="col_cluster"></th><th data-i18n="col_period"></th><th data-i18n="col_count"></th><th data-i18n="col_type"></th><th id="history-ddhead"></th><th data-i18n="col_grade"></th></tr></thead>
     <tbody id="history-tbody"></tbody></table></div></div>
 </section>
 
 <section class="section" id="stats">
-  <div class="section-head"><span class="section-num">五</span><h2>集群有效性统计</h2></div>
+  <div class="section-head"><span class="section-num" data-i18n="num5"></span><h2 data-i18n="sec_stats"></h2></div>
   <p class="section-sub" id="stats-sub"></p>
   <div id="chart-box"></div>
 </section>
@@ -230,20 +269,10 @@ def build_dashboard(payloads: dict, out_path: Path) -> Path:
 {cmp_section}
 
 <footer>
-  <p><b>局限</b>：可评估样本量小，命中率置信区间宽；回撤口径为<span id="foot-ddmode"></span>；不构成投资建议。</p>
+  <p id="foot"></p>
 </footer>
-
-<script>{_asset('chart_engine.js')}</script>
-<script>{_asset('backtest.js')}</script>
-<script>{_asset('common.js')}</script>
-<script>
-window.__DATA__ = {json.dumps(payloads, ensure_ascii=False)};
-window.__LEVEL_COLOR__ = {json.dumps(LEVEL_COLOR, ensure_ascii=False)};
-</script>
-<script>
-{DASHBOARD_JS}
-</script>
-</body></html>"""
+""" + _scripts(lang, f"""window.__DATA__ = {json.dumps(payloads, ensure_ascii=False)};
+window.__LEVEL_COLOR__ = {json.dumps(LEVEL_COLOR, ensure_ascii=False)};""", DASHBOARD_JS)
 
     out_path.write_text(html, encoding='utf-8')
     return out_path
@@ -253,6 +282,7 @@ DASHBOARD_JS = r"""
 (function(){
   const D = window.__DATA__, LC = window.__LEVEL_COLOR__;
   const {TAG, pct} = window.HO;
+  const {t, v} = window.I18N;
   let charts = [];
 
 
@@ -260,119 +290,106 @@ DASHBOARD_JS = r"""
     charts.forEach(c => c.destroy && c.destroy());
     charts = [];
     const d = D[key], S = d.series, m = d.meta, p = d.params;
+    const src = v(d.index_source);
 
-    document.getElementById('toggle-caption').textContent =
-      `${d.strategy} · ${d.index_source} · 集群窗口${p.cluster_window}日`;
+    document.getElementById('toggle-caption').textContent = t('caption', v(d.strategy), src, p.cluster_window);
     document.querySelectorAll('.toggle-btn').forEach(b =>
       b.classList.toggle('active', b.dataset.cfg === key));
 
-    // 各策略的区间不同(指数发布日/成分股起点都不一样), 头部无数据的那段
-    // 已经在 Python 侧裁掉了, 这里直接展示实际区间即可。
-    document.getElementById('hero-range').textContent =
-      `${m.start} ~ ${m.end}（${m.n_days.toLocaleString()} 个交易日）`;
+    document.getElementById('hero-range').textContent = t('range', m.start, m.end, m.n_days.toLocaleString());
 
-    // 口径说明按实际参数生成, 不写死 —— 之前写死的那句和默认参数正好说反了
-    document.getElementById('foot-ddmode').textContent =
-      (p.dd_mode === 'peak_trough' ? '窗口内峰谷最大回撤' : '锚点日收盘起最低点跌幅') +
-      `（起算点：${p.dd_anchor === 'confirm' ? '集群确认日' : '集群首日'}）`;
+    // 口径说明按实际参数生成
+    document.getElementById('foot').innerHTML = t('foot',
+      (p.dd_mode === 'peak_trough' ? t('dd_peak') : t('dd_from')) + t('anchor', p.dd_anchor === 'confirm'));
 
-    // 当前状态 —— 现状快照, 不是回测统计
+    // 当前状态（现状快照，不是回测统计）
     const st = m.status || {};
     const ac = st.active_cluster;
     document.getElementById('status-grid').innerHTML = `
-      <div class="stat-card"><div class="label">最近信号日</div>
-        <div class="value" style="font-size:20px">${st.last_signal_date || '无'}</div>
-        <div class="foot">截至 ${st.as_of || '-'}</div></div>
-      <div class="stat-card"><div class="label">近 ${st.window} 日单点信号</div>
+      <div class="stat-card"><div class="label">${t('st_last')}</div>
+        <div class="value" style="font-size:20px">${st.last_signal_date || t('none')}</div>
+        <div class="foot">${t('st_asof', st.as_of || '-')}</div></div>
+      <div class="stat-card"><div class="label">${t('st_recent', st.window)}</div>
         <div class="value">${st.recent_signal_count ?? 0}</div>
-        <div class="foot">不要求同属一个集群</div></div>
-      <div class="stat-card"><div class="label">近期集群</div>
-        <div class="value" style="font-size:16px">${ac ? `${ac.type}` : '无'}</div>
+        <div class="foot">${t('st_recent_foot')}</div></div>
+      <div class="stat-card"><div class="label">${t('st_cluster')}</div>
+        <div class="value" style="font-size:16px">${ac ? v(ac.type) : t('none')}</div>
         <div class="foot">${ac
-          ? `${ac.start} ~ ${ac.end}，${ac.count} 次信号` +
-            (ac.confirm_date ? `，已于 ${ac.confirm_date} 确认` : '，尚未确认')
-          : `近 ${st.window} 日内无集群`}</div></div>`;
+          ? t('st_cluster_foot', ac.start, ac.end, ac.count) +
+            (ac.confirm_date ? t('st_confirmed', ac.confirm_date) : t('st_unconfirmed'))
+          : t('st_no_cluster', st.window)}</div></div>`;
 
     const gw = p.grade_window, cuts = p.grade_cuts;
     document.getElementById('stat-grid').innerHTML = `
-      <div class="stat-card"><div class="label">集群总数</div>
+      <div class="stat-card"><div class="label">${t('sc_total')}</div>
         <div class="value">${m.n_clusters_valid}</div>
-        <div class="foot">含 ${m.n_clusters_valid - m.n_gradable} 个近期信号</div></div>
-      <div class="stat-card"><div class="label">中型以上回撤命中</div>
+        <div class="foot">${t('sc_total_foot', m.n_clusters_valid - m.n_gradable)}</div></div>
+      <div class="stat-card"><div class="label">${t('sc_mid')}</div>
         <div class="value">${m.hit_mid}</div>
-        <div class="foot">${gw} 日 ≤ ${(cuts[1]*100).toFixed(0)}%</div></div>
-      <div class="stat-card"><div class="label">较大回撤命中</div>
+        <div class="foot">${t('sc_win', gw, (cuts[1]*100).toFixed(0))}</div></div>
+      <div class="stat-card"><div class="label">${t('sc_big')}</div>
         <div class="value">${m.hit_big}</div>
-        <div class="foot">${gw} 日 ≤ ${(cuts[0]*100).toFixed(0)}%</div></div>
-      <div class="stat-card"><div class="label">中型回撤命中率</div>
+        <div class="foot">${t('sc_win', gw, (cuts[0]*100).toFixed(0))}</div></div>
+      <div class="stat-card"><div class="label">${t('sc_rate')}</div>
         <div class="value">${pct(m.hit_rate,0)}</div>
-        <div class="foot">基于 ${m.n_gradable} 个可评估集群</div></div>`;
+        <div class="foot">${t('sc_rate_foot', m.n_gradable)}</div></div>`;
 
     const order = ['较大回撤','中型回调','小幅回调','无显著回撤','近期信号'];
     document.getElementById('pill-row').innerHTML = order.filter(l => m.level_counts[l])
-      .map(l => `<div class="pill"><span class="dot" style="background:${LC[l]}"></span>${l} <b>${m.level_counts[l]}</b></div>`).join('');
+      .map(l => `<div class="pill"><span class="dot" style="background:${LC[l]}"></span>${v(l)} <b>${m.level_counts[l]}</b></div>`).join('');
 
-    document.getElementById('summary-note').innerHTML =
-      `集群信号为市场系统性调整的<b>必要非充分条件</b>（触发 ≠ 必跌，但下跌概率抬升），` +
-      `触发时建议提升防御仓位而非直接卖出。存在"假警报"（如流动性宽松期），需结合宏观环境综合判断。` +
-      `当前可评估集群 ${m.n_gradable} 个，样本量有限，结论不宜过度外推。`;
+    document.getElementById('summary-note').innerHTML = t('summary_note', m.n_gradable);
 
     // 走势与逐日信号标注
-    document.getElementById('trend-title').textContent = d.index_source + ' 走势与信号标注';
+    document.getElementById('trend-title').textContent = t('trend_title', src);
     const markers = HO.signalMarkers(d.signal_days, d.clusters, LC);
     charts.push(new CE.TimeSeriesChart(document.getElementById('chart-trend'), {
-      title: d.index_source, subtitle:'可滚轮缩放/拖拽 · 三角=有效集群 圆点=单点信号', dates:S.dates, height:340,
-      series:[{label:d.index_source, color:'#1B2233', data:S.index_close, width:1.5}],
+      title: src, subtitle: t('trend_sub'), dates:S.dates, height:340,
+      series:[{label:src, color:'#1B2233', data:S.index_close, width:1.5}],
       markers, yFormat:v=>v.toFixed(0)}));
 
     const ma = BT.rollingMean(S.index_close, p.ma_period);
     charts.push(new CE.TimeSeriesChart(document.getElementById('chart-cond1'), {
-      title:`条件① 趋势向上`, subtitle:`${d.index_source} vs ${p.ma_period}日均线`, dates:S.dates, height:230,
-      series:[{label:'指数',color:'#97A3BC',data:S.index_close,width:1.1},
+      title:t('c1_title'), subtitle:t('c1_sub', src, p.ma_period), dates:S.dates, height:230,
+      series:[{label:t('index'),color:'#97A3BC',data:S.index_close,width:1.1},
               {label:`MA${p.ma_period}`,color:'#D9A441',data:ma,width:1.8}],
       yFormat:v=>v.toFixed(0)}));
     charts.push(new CE.TimeSeriesChart(document.getElementById('chart-cond2'), {
-      title:'条件② 新高/新低占比', subtitle:`阈值 ${(p.threshold*100).toFixed(1)}%`, dates:S.dates, height:230,
-      series:[{label:'新高占比',color:'#C64B37',data:S.high_ratio,width:1.3},
-              {label:'新低占比',color:'#5C8AE6',data:S.low_ratio,width:1.3}],
-      hlines:[{value:p.threshold,color:'#D9A441',label:'阈值'}], yFormat:v=>(v*100).toFixed(1)+'%'}));
+      title:t('c2_title'), subtitle:t('c2_sub', (p.threshold*100).toFixed(1)), dates:S.dates, height:230,
+      series:[{label:t('new_high_pct'),color:'#C64B37',data:S.high_ratio,width:1.3},
+              {label:t('new_low_pct'),color:'#5C8AE6',data:S.low_ratio,width:1.3}],
+      hlines:[{value:p.threshold,color:'#D9A441',label:t('threshold')}], yFormat:v=>(v*100).toFixed(1)+'%'}));
     charts.push(new CE.TimeSeriesChart(document.getElementById('chart-cond3'), {
-      title:`条件③ 新高 ≤ 新低×${p.hl_ratio}`, subtitle:'柱=新高家数', dates:S.dates, height:230,
-      series:[{label:'新高家数',color:'#C64B37',data:S.new_high,type:'bar',opacity:0.75},
-              {label:'阈值',color:'#5C8AE6',data:S.new_low.map(v=>v==null?null:v*p.hl_ratio),width:1.4,dash:'4,3'}],
+      title:t('c3_title', p.hl_ratio), subtitle:t('c3_sub'), dates:S.dates, height:230,
+      series:[{label:t('new_high_n'),color:'#C64B37',data:S.new_high,type:'bar',opacity:0.75},
+              {label:t('threshold'),color:'#5C8AE6',data:S.new_low.map(v=>v==null?null:v*p.hl_ratio),width:1.4,dash:'4,3'}],
       yFormat:v=>v.toFixed(0)}));
     charts.push(new CE.TimeSeriesChart(document.getElementById('chart-cond4'), {
-      title:'条件④ McClellan振荡器', subtitle:`EMA${p.ema_short}-EMA${p.ema_long}，0轴之下=满足`, dates:S.dates, height:230,
+      title:t('c4_title'), subtitle:t('c4_sub', p.ema_short, p.ema_long), dates:S.dates, height:230,
       series:[{label:'McClellan',color:'#E0904A',data:S.mcclellan,type:'bar'}],
-      hlines:[{value:0,color:'#9AA2B5',label:'0轴'}], yFormat:v=>v.toFixed(0)}));
+      hlines:[{value:0,color:'#9AA2B5',label:t('zero_axis')}], yFormat:v=>v.toFixed(0)}));
 
-    document.getElementById('panel-sub').textContent =
-      `条件① ${pct(m.cond_rate.cond1,1)} · 条件② ${pct(m.cond_rate.cond2,1)} · ` +
-      `条件③ ${pct(m.cond_rate.cond3,1)} · 条件④ ${pct(m.cond_rate.cond4,1)} · ` +
-      `四条件同时满足 ${m.signal_days} 天 / ${m.n_days.toLocaleString()} 天`;
+    document.getElementById('panel-sub').textContent = t('panel_sub',
+      pct(m.cond_rate.cond1,1), pct(m.cond_rate.cond2,1), pct(m.cond_rate.cond3,1), pct(m.cond_rate.cond4,1),
+      m.signal_days, m.n_days.toLocaleString());
 
-    document.getElementById('history-ddhead').textContent = `${gw}日回撤`;
-    document.getElementById('history-sub').textContent =
-      `"特征数"为集群内信号触发次数；"${gw}日回撤"为锚点日起未来 ${gw} 个交易日的` +
-      (p.dd_mode === 'peak_trough' ? '峰谷最大回撤' : '最低点跌幅');
+    document.getElementById('history-ddhead').textContent = t('dd_head', gw);
+    document.getElementById('history-sub').textContent = t('history_sub', gw, p.dd_mode === 'peak_trough');
     document.getElementById('history-tbody').innerHTML = d.clusters.map(c => {
       const dd = c['dd'+gw];
       return `<tr><td class="num">${c.id}</td><td class="strong">${c.start} ~ ${c.end}</td>
         <td class="num">${c.count}</td>
-        <td><span class="tag ${c.type==='有效集群'?'tag-amber':'tag-blue'}">${c.type}</span></td>
-        <td class="num">${dd===null?'观察中':pct(dd,1)}</td>
-        <td><span class="tag ${TAG[c.level]||'tag-blue'}">${c.level}</span></td></tr>`;
+        <td><span class="tag ${c.type==='有效集群'?'tag-amber':'tag-blue'}">${v(c.type)}</span></td>
+        <td class="num">${dd===null?t('pending_dd'):pct(dd,1)}</td>
+        <td><span class="tag ${TAG[c.level]||'tag-blue'}">${v(c.level)}</span></td></tr>`;
     }).join('');
 
-    // 箱线图直接用 Python 预算好的分位数。这里以前调 BT.runAll() 重算一遍,
-    // 而 runAll 内部的 baselineRates 要扫全样本 x 4 个窗口 —— 切换策略时
-    // 每次都重跑, 那就是切换卡顿的来源。
-    document.getElementById('stats-sub').textContent =
-      `对有效集群锚点日起未来各窗口最大回撤的分布, 基于 ${m.n_gradable} 个观察期已满的集群`;
+    // 箱线图直接用 Python 算好的分位数，切换策略时不必重算基准率
+    document.getElementById('stats-sub').textContent = t('stats_sub', m.n_gradable);
     const groups = p.dd_windows.filter(w=>m.cluster_box[w])
-      .map(w => ({label:`未来${w}日`, ...m.cluster_box[w], color:'#D9A441'}));
+      .map(w => ({label:t('fwd', w), ...m.cluster_box[w], color:'#D9A441'}));
     if (groups.length) charts.push(new CE.BoxPlotChart(document.getElementById('chart-box'), {
-      title:'集群信号后续最大回撤分布', subtitle:`基于 ${m.n_gradable} 个集群`,
+      title:t('box_title'), subtitle:t('box_sub', m.n_gradable),
       groups, yFormat:v=>(v*100).toFixed(0)+'%'}));
 
   }
@@ -382,16 +399,22 @@ DASHBOARD_JS = r"""
   render(Object.keys(D)[0]);
 
   if (window.__TIMELINE__){
+    const TL = window.__TIMELINE__;
+    const lanes = TL.lanes.map(lane => ({...lane, label: v(lane.label),
+      items: lane.items.map(it => ({...it,
+        label: `${v(it.strategy)} #${it.id} · ${v(it.level)}`,
+        sublabel: t('mk_range', it.start, it.end, it.count)}))}));
     new CE.TimelineCompare(document.getElementById('chart-timeline'), {
-      title:'各策略有效集群时间分布', subtitle:'虚线=判定为同一事件的匹配',
-      dates:window.__TIMELINE__.dates, lanes:window.__TIMELINE__.lanes, links:window.__TIMELINE__.links});
+      title:t('tl_title'), subtitle:t('tl_sub'),
+      dates:TL.dates, lanes, links:TL.links});
   }
 })();
 """
 
 
 def build_all(payloads: dict, out_dir: Path) -> list[Path]:
-    """生成 dashboard.html（lab.html 由 lab.py 单独生成）。"""
+    """生成中英两版仪表盘（参数实验室由 lab.py 单独生成）。"""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    return [build_dashboard(payloads, out_dir / 'dashboard.html')]
+    return [build_dashboard(payloads, out_dir / page_name('dashboard', lang), lang)
+            for lang in LANGS]

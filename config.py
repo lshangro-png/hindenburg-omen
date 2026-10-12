@@ -64,15 +64,14 @@ HEAVY_KEYS = {'ema_short', 'ema_long', 'mc_norm', 'hl_window',
 # 150 ≥ 滑块上限 ma_period 120 + ma_lookback 20。
 INDEX_PREHEAT = 150
 
-# 参数实验室的滑块
+# 参数实验室的滑块（取值范围；名称和单位的中英文在 assets/i18n.js 的 sl_* / u_*）
 SLIDER_SPECS = [
-    dict(key='ma_period', label='① 趋势均线周期', min=10, max=120, step=5, unit='日'),
-    dict(key='ma_lookback', label='① 均线比较滞后', min=1, max=20, step=1, unit='日'),
-    dict(key='threshold', label='② 新高/新低占比阈值', min=0.005, max=0.05, step=0.001,
-         unit='', pct=True),
-    dict(key='hl_ratio', label='③ 新高 ≤ 新低 ×', min=0.5, max=5.0, step=0.1, unit='倍'),
-    dict(key='cluster_window', label='集群确认窗口', min=5, max=60, step=1, unit='日'),
-    dict(key='cluster_min', label='升级为集群的最少信号数', min=1, max=6, step=1, unit='次'),
+    dict(key='ma_period', min=10, max=120, step=5),
+    dict(key='ma_lookback', min=1, max=20, step=1),
+    dict(key='threshold', min=0.005, max=0.05, step=0.001, pct=True),
+    dict(key='hl_ratio', min=0.5, max=5.0, step=0.1),
+    dict(key='cluster_window', min=5, max=60, step=1),
+    dict(key='cluster_min', min=1, max=6, step=1),
 ]
 
 

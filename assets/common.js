@@ -3,7 +3,7 @@
 
      HO.TAG            回撤等级 → 徽标 CSS 类名
      HO.pct(x, d)      小数 → 百分比字符串（null 显示为 —）
-     HO.signalMarkers  信号日 → 走势图标注点
+     HO.signalMarkers  信号日 → 走势图标注点（文字来自 i18n.js）
    ============================================================ */
 window.HO = (function () {
   const TAG = {'较大回撤':'tag-red','中型回调':'tag-orange','小幅回调':'tag-amber',
@@ -20,8 +20,8 @@ window.HO = (function () {
       const c = sd.cluster_id != null ? clusterById[sd.cluster_id] : null;
       return {index: sd.index, color: LC[sd.level]||'#5C8AE6',
         shape: c ? 'triangle' : 'dot', r: c ? 6 : 3,
-        label: c ? `集群#${c.id} · ${sd.level}` : `单点信号 · ${sd.level}`,
-        sublabel: c ? `${c.start} ~ ${c.end} · ${c.count}次信号` : sd.date};
+        label: c ? I18N.t('mk_cluster', c.id, I18N.v(sd.level)) : I18N.t('mk_single', I18N.v(sd.level)),
+        sublabel: c ? I18N.t('mk_range', c.start, c.end, c.count) : sd.date};
     });
   }
 
