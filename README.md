@@ -7,7 +7,7 @@ tested against **base rates** to check whether it carries any real information.
 Reference: Zheshang Securities, *How effective is the "Hindenburg Omen" at avoiding index declines?
 — Chip Microstructure Series (IX)* (2026-06-26, in Chinese).
 
-- 📓 **Start here**: [walkthrough.ipynb](walkthrough.ipynb) — the full research process and conclusions, with charts (currently in Chinese; an English version is in progress)
+- 📓 **Start here**: [walkthrough.ipynb](walkthrough.ipynb) — the full research process and conclusions, with charts ([中文版](walkthrough_zh.ipynb))
 - 📊 **Live dashboard**: https://lshangro-png.github.io/hindenburg-omen/
 - 🎛 **Parameter lab**: https://lshangro-png.github.io/hindenburg-omen/lab.html (drag sliders, results recompute instantly)
 
@@ -55,6 +55,7 @@ while conditions ②③④ use the matching stock universe (whole market / Shang
 ```
 .
 ├── walkthrough.ipynb  Research walkthrough: calls the modules below, from data to conclusions
+├── walkthrough_zh.ipynb  The same walkthrough in Chinese
 ├── hindenburg.py      Command-line entry point (update / run / viz / inspect-day ...)
 ├── backtest.py        Pure backtest functions: build_signals → build_clusters → evaluate → summarize
 ├── config.py          All parameters and strategy definitions (light vs. heavy parameters)

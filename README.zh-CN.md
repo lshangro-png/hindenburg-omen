@@ -5,7 +5,7 @@
 在 A 股上复现顶部预警指标「兴登堡预兆」，并用**基准率**检验它是否真的有信息量。
 参考：浙商证券《"兴登堡预兆"规避股指下跌的有效性如何？——筹码微观结构探秘系列（九）》（2026-06-26）。
 
-- 📓 **从这里开始**：[walkthrough.ipynb](walkthrough.ipynb)，带图从头到尾走一遍研究过程和结论
+- 📓 **从这里开始**：[walkthrough_zh.ipynb](walkthrough_zh.ipynb)，带图从头到尾走一遍研究过程和结论（[English](walkthrough.ipynb)）
 - 📊 **在线仪表盘**：https://lshangro-png.github.io/hindenburg-omen/
 - 🎛 **参数实验室**：https://lshangro-png.github.io/hindenburg-omen/lab.html （拖滑块实时重算）
 
@@ -19,7 +19,7 @@
 - ≤ −20% 口径的超额方向也不一致，而且每个指数可评估的集群只有 4~14 个。
 - 2015 年大顶完全没有信号：市场从普涨直接切到普跌，「新高新低同时大量出现」的条件②一天都没成立。
 
-详细推导见 [walkthrough.ipynb](walkthrough.ipynb)。
+详细推导见 [walkthrough_zh.ipynb](walkthrough_zh.ipynb)。
 
 ## 指标定义
 
@@ -47,7 +47,8 @@ A 股 252 日窗口下这个数高达 85%~100%，所以除了「命中率 92%」
 
 ```
 .
-├── walkthrough.ipynb  研究走读：调用下面的模块，从数据到结论完整演示
+├── walkthrough_zh.ipynb  研究走读（中文）：调用下面的模块，从数据到结论完整演示
+├── walkthrough.ipynb  同一份研究走读的英文版
 ├── hindenburg.py      命令行入口（update / run / viz / inspect-day ...）
 ├── backtest.py        回测核心纯函数：build_signals → build_clusters → evaluate → summarize
 ├── config.py          全部参数与策略定义（轻参数 / 重参数分层）
@@ -172,7 +173,7 @@ python hindenburg.py update --reset-head 000985.CSI   # 强制重试拉取指数
 **2015 年没信号**：这是指标本身的盲区，不是算错了。条件②要求新高、新低占比同一天都 ≥ 2.2%：
 6 月中旬顶部时新高占比 30%~40%，新低几乎为 0；下跌开始后新高很快掉到 1% 以下，
 而新低直到 7 月 7~8 日才大量出现，那时条件①也已失效。普涨直接切到普跌，条件②一天都没成立。
-逐日数据见 walkthrough.ipynb 第 6 节。
+逐日数据见 walkthrough_zh.ipynb 第 6 节。
 
 ## 参数口径
 
