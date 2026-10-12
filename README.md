@@ -3,7 +3,21 @@
 在 A 股上复现顶部预警指标「兴登堡预兆」，并用**基准率**检验它是否真的有信息量。
 参考：浙商证券《"兴登堡预兆"规避股指下跌的有效性如何？——筹码微观结构探秘系列（九）》（2026-06-26）。
 
-📊 **在线仪表盘**：https://lshangro-png.github.io/hindenburg-omen/ （数据截至 2026-08-07）
+- 📓 **从这里开始**：[walkthrough.ipynb](walkthrough.ipynb)，带图从头到尾走一遍研究过程和结论
+- 📊 **在线仪表盘**：https://lshangro-png.github.io/hindenburg-omen/
+- 🎛 **参数实验室**：https://lshangro-png.github.io/hindenburg-omen/lab.html （拖滑块实时重算）
+
+数据截至 2026-08-07。
+
+## 主要结论
+
+在 A 股上，兴登堡预兆**没有表现出稳定的预警能力**：
+
+- 252 日窗口下 ≤ −10% 回撤的基准率高达 85%~100%，各指数命中率与基准率之差在 −7 到 +9 个百分点之间，有正有负。
+- ≤ −20% 口径的超额方向也不一致，而且每个指数可评估的集群只有 4~14 个。
+- 2015 年大顶完全没有信号：市场从普涨直接切到普跌，「新高新低同时大量出现」的条件②一天都没成立。
+
+详细推导见 [walkthrough.ipynb](walkthrough.ipynb)。
 
 ## 指标定义
 
@@ -31,7 +45,9 @@ A 股这个数接近 97%，所以除了「命中率 92%」这种数字，还会�
 
 ```
 .
-├── hindenburg.py      命令行入口 + 回测核心（纯函数：build_signals / build_clusters / evaluate / summarize）
+├── walkthrough.ipynb  研究走读：调用下面的模块，从数据到结论完整演示
+├── hindenburg.py      命令行入口（update / run / viz / inspect-day ...）
+├── backtest.py        回测核心纯函数：build_signals → build_clusters → evaluate → summarize
 ├── config.py          全部参数与策略定义（轻参数 / 重参数分层）
 ├── data.py            数据层：价格面板、可交易域、新高新低、McClellan、各级本地缓存
 ├── jq_source.py       聚宽数据源（唯一的远端），含额度保护与面板增量更新
@@ -39,10 +55,10 @@ A 股这个数接近 97%，所以除了「命中率 92%」这种数字，还会�
 ├── lab.py             参数实验室 lab.html（浏览器里拖滑块实时重算轻参数）
 ├── export_unadj.py    实验性对照口径：不复权价 + 不过滤可交易域（仅进 lab）
 ├── assets/
-│   ├── backtest.js    回测核心的 JS 镜像，与 hindenburg.py 逐函数对应
+│   ├── backtest.js    回测核心的 JS 镜像，与 backtest.py 逐函数对应
 │   ├── chart_engine.js  轻量 SVG 图表引擎
 │   └── report.css
-├── docs/dashboard.html  最近一次回测的仪表盘快照
+├── docs/              GitHub Pages：仪表盘和参数实验室的快照
 ├── data/              本地数据（不入库，格式见 data/README.md）
 └── output/            运行产出：clusters_*.csv / export_*.json / *.html（不入库）
 ```
@@ -150,9 +166,10 @@ python hindenburg.py update --reset-head 000985.CSI   # 强制重试拉取指数
 **各标的起点不一样**：聚宽没有指数发布日之前的数据（中证全指只到 2011-08，
 300/500/1000 都从各自发布日开始）。回测会自动从有数据的第一天开始。
 
-**2014/2015 没信号**：这是指标本身的盲区，不是算错了。那一轮是齐涨齐跌加闪崩：
-2015 年 6 月顶部时全市场只有 0.4% 的股票在创新低，条件②（新高、新低都要多）不成立；
-等到 7 月新低大量出现时，均线早已掉头，条件①又不成立。两个窗口错开，四个条件凑不齐。
+**2015 年没信号**：这是指标本身的盲区，不是算错了。条件②要求新高、新低占比同一天都 ≥ 2.2%：
+6 月中旬顶部时新高占比 30%~40%，新低几乎为 0；下跌开始后新高很快掉到 1% 以下，
+而新低直到 7 月 7~8 日才大量出现，那时条件①也已失效。普涨直接切到普跌，条件②一天都没成立。
+逐日数据见 walkthrough.ipynb 第 6 节。
 
 ## 参数口径
 

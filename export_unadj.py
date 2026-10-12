@@ -1,31 +1,19 @@
 """
-export_unadj.py —— 生成"不复权价 + 不过滤可交易域"这一实验性口径的数据,
-只给参数实验室(lab.py)用, 不进 dashboard。
+实验性对照口径：不复权价 + 可交易域不过滤。只给参数实验室用，不进仪表盘。
 
-背景: 多轮排查(可交易域/条件①口径/日涨跌幅/盘中high-low)都无法复现某些
-公开复现页面在 2014-07/2015-06 附近标出的信号, 最后确认差异在于:
-  ① 用不复权价算 52 周新高新低(不复权价在除权除息日的断崖式下跌会被
-     误判成真实新低, 2014-2015 恰是高送转最密集的年份)
-  ② 不做可交易域过滤(不剔 ST/停牌)
-两者叠加(下文称"D组")才能让 2014-07-09/2015-06-29
-两天的条件②都触发, 单独任何一个口径都不够。
+背景：一些公开复现页面在 2014-07、2015-06 附近标出了信号，本项目的正式口径
+复现不出来。排查后发现差异来自两点叠加：
+    ① 用不复权价算 52 周新高新低（除权日的断崖下跌被当成新低，2014–2015 高送转密集）
+    ② 可交易域不过滤（不剔停牌、上市不满一年）
+这不是本项目认可的口径（除权跳空不是真实下跌），只用于对照。
 
-这不是本项目认可的口径 —— 不复权跳空不是真实回撤, 用它判断"市场是否
-分化"混淆了公司行为和市场行为。放进 lab 只是为了让你能亲眼对比"这样
-改口径确实能复现出那些公开页面的信号", 不建议当作正式结论使用, 所以
-不进 dashboard、也不算进 STRATEGIES。
+用法：
+    python export_unadj.py                     # 默认 data 目录、中证全指
+    python export_unadj.py data --start 2011-08-02 --end 2026-08-07
+    python lab.py                              # 参数实验室里会多出这个对照组
 
-用法:
-  python export_unadj.py                    # 默认 data 目录, 中证全指
-  python export_unadj.py data/data --start 2011-08-02 --end 2026-08-07
-
-跑完会在 output/export_ashare_unadj.json 落一份和正常 export 同结构的
-文件。lab.py 是按目录里所有 export_*.json 文件生成切换按钮的(不看
-STRATEGIES 字典), 所以这个文件会自动出现在 lab.html 里、但不会出现在
-dashboard.html 里(dashboard 只认 STRATEGIES 里登记过的几个策略键)。
-
-跑一次之后同一区间会缓存 <数据目录>/intraday_cache/unadj_close_*.pkl,
-之后重跑不再消耗聚宽配额。
+输出 output/export_ashare_unadj.json；不复权价缓存在 <数据目录>/intraday_cache/，
+重跑不再消耗聚宽额度。
 """
 from __future__ import annotations
 
@@ -40,13 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def fetch_unadj_close(data_dir: Path, codes, start: str, end: str) -> pd.DataFrame:
-    """
-    从聚宽拉不复权收盘价, 落盘缓存, 重跑不重复消耗配额。
-
-    坏代码隔离复用 jq_source._isolate_bad_codes: 聚宽对批量请求里任何一个
-    无效代码(老代码改名/退市多年很常见)都是整批直接报错, 不隔离的话随便
-    一个有问题就让整次拉取全军覆没。
-    """
+    """从聚宽拉不复权收盘价（宽表），结果缓存到本地。"""
     cache = data_dir / 'intraday_cache' / f'unadj_close_{start}_{end}.pkl'
     if cache.exists():
         print(f'命中本地缓存 {cache.name}, 跳过拉取')
@@ -99,7 +81,8 @@ def main():
     import config
     config.DATA_DIR = a.data_dir
     a.out_dir = a.out_dir or config.OUT_DIR
-    from data import Panel
+    from data import Panel, new_high_low, mcclellan
+    import backtest as B
     import hindenburg as H
 
     if a.strategy not in config.STRATEGIES:
@@ -107,8 +90,7 @@ def main():
     base = config.STRATEGIES[a.strategy]
     p = base.params
     start = a.start or base.start or config.START
-    # 不传 state_rule: 就是要"不过滤可交易域"。注意 Panel 的列过滤仍然生效
-    # (剔非股票代码 + 默认剔北交所), 只是不再按停牌/上市天数/ST 筛。
+    # 只做列过滤（剔非股票代码、北交所），不按停牌 / 上市天数筛
     panel = Panel()
     end = a.end or H._end_date(panel)
 
@@ -118,11 +100,10 @@ def main():
     codes = list(panel.prices.columns)
     unadj = fetch_unadj_close(Path(a.data_dir), codes, start, end)
 
-    # 可交易域不过滤: 只要求当天有不复权价, 不剔 ST/停牌, 这正是要
-    # 对照的"D组"口径。
+    # 可交易域不过滤：当天有不复权价就计入
     valid = unadj.notna()
-    df = H.new_high_low(unadj, valid, p.hl_window, p.hl_min_periods)
-    df['mcclellan'] = H.mcclellan(unadj, valid, p.ema_short, p.ema_long, p.mc_norm)
+    df = new_high_low(unadj, valid, p.hl_window, p.hl_min_periods)
+    df['mcclellan'] = mcclellan(unadj, valid, p.ema_short, p.ema_long, p.mc_norm)
     df = df.loc[start:end]
 
     store = H._make_store()
@@ -135,10 +116,11 @@ def main():
     if first is not None and first > df.index[0]:
         df = df.loc[first:]
 
-    df = H.build_signals(df, p, index_full=index_full)
-    cl = H.build_clusters(df, p)
-    cl = H.evaluate(df, cl, p)
+    df = B.build_signals(df, p, index_full=index_full)
+    cl = B.build_clusters(df, p)
+    cl = B.evaluate(df, cl, p)
 
+    # export_payload() 需要一个 Omen 对象，这里构造一个只带必要属性的替身
     class _FakeStrategy:
         name = f'{base.name}(不复权+不过滤·实验对照)'
         benchmark = base.benchmark

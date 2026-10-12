@@ -1,11 +1,8 @@
 """
-viz.py —— 把回测结果渲染成 HTML 仪表盘
+生成回测仪表盘 dashboard.html：固定参数下的完整结果，可切换策略，并有策略对比。
 
-产出 dashboard.html: 固定参数下的完整结果, 多策略切换 + 策略对比。
-
-参数实验室(拖滑块实时重算轻参数)已经拆到 lab.py, 作为独立脚本单独运行,
-不在这个模块里、也不在 `python hindenburg.py viz` 的默认产出里 —— 它只是
-调参时的个人工具, 不是要交付的东西。用法见 lab.py 顶部说明。
+页面是单个自包含的 HTML，图表引擎和样式来自 assets/，数据以 JSON 内嵌。
+参数实验室 lab.html 由 lab.py 单独生成。
 """
 from __future__ import annotations
 
@@ -16,9 +13,7 @@ import config
 
 ASSETS = Path(__file__).parent / 'assets'
 
-# 回撤等级 -> 颜色。键必须和 hindenburg.grade() / backtest.js 的返回值一字不差
-# (含 '近期信号'), 否则该等级的集群在徽标/图例里会被静默漏掉。
-# 等级到 CSS 徽标类名的映射只在浏览器端用得到, 写在 DASHBOARD_JS 的 TAG 常量里。
+# 回撤等级 → 颜色。键必须和 backtest.grade() 的返回值一致
 LEVEL_COLOR = {'较大回撤': '#C64B37', '中型回调': '#E0904A', '小幅回调': '#D9A441',
                '无显著回撤': '#4FA98C', '近期信号': '#5C8AE6'}
 
@@ -32,6 +27,7 @@ def _asset(name: str) -> str:
 
 
 def _head(title: str, extra_css: str = '') -> str:
+    """HTML 头部：字体、内联 report.css 和额外样式。"""
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -49,8 +45,7 @@ def _head(title: str, extra_css: str = '') -> str:
 <body>"""
 
 
-# 仪表盘专用的额外样式(策略切换/对比表)。参数实验室专用的 .lab-* 样式
-# 已经搬到 lab.py 的 LAB_CSS 里, 两边各自独立, 不共享同一个大字符串了。
+# 仪表盘专用样式（策略切换按钮、对比表）
 DASHBOARD_CSS = """
 .toggle-row{display:flex; align-items:center; gap:12px; margin:0 0 24px; flex-wrap:wrap;}
 .toggle-group{display:inline-flex; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:4px;}
@@ -69,6 +64,7 @@ DASHBOARD_CSS = """
 # =====================================================================
 
 def build_dashboard(payloads: dict, out_path: Path) -> Path:
+    """payloads: {策略键: export_payload() 的结果}，写出 dashboard.html。"""
     keys = list(payloads)
     first = payloads[keys[0]]
     meta = first['meta']
@@ -77,7 +73,8 @@ def build_dashboard(payloads: dict, out_path: Path) -> Path:
         f'<button class="toggle-btn{" active" if i == 0 else ""}" data-cfg="{k}" type="button">'
         f'{payloads[k]["strategy"]}</button>' for i, k in enumerate(keys))
 
-    # 策略对比: 各策略有效集群的时间分布 (±8 交易日容忍视为"同一事件")
+    # 策略对比：泳道图展示各策略有效集群的时间分布，±TOL 个交易日内重叠视为同一事件。
+    # 日期轴用所有策略日期的并集（各策略起点不同）。
     #
     # 日期轴必须用所有策略的并集, 不能用某一个策略的。各策略起点不同
     # (中证全指 2011-08 才发布, 上证综指能回到 2000), 若拿其中一个当轴,
@@ -93,15 +90,12 @@ def build_dashboard(payloads: dict, out_path: Path) -> Path:
         def valid_of(k):
             return [c for c in payloads[k]['clusters'] if c['type'] == '有效集群']
 
-        # 落在并集轴之外的集群不该发生(并集是所有策略日期的合集), 真出现了
-        # 说明 export 的 dates 与 clusters 对不上, 宁可显式报出来也不要静默兜底
         missing = [(k, c['start']) for k in keys for c in valid_of(k)
                    if c['start'] not in idx or c['end'] not in idx]
         if missing:
             print(f'  ⚠ 策略对比: {len(missing)} 个集群的日期不在并集轴上, 已跳过: {missing[:3]}')
 
-        # 裁掉最早一个集群之前的空白: 各策略起点差好几年, 不裁的话图左边
-        # 会拖出一长条既无数据也无信号的留白, 把真正有内容的区间挤扁。
+        # 裁掉最早集群之前的空白，左侧留 60 个交易日
         first_i = min((idx[c['start']] for k in keys for c in valid_of(k)
                        if c['start'] in idx), default=0)
         clip = max(0, first_i - 60)          # 留 60 个交易日余量, 不要贴边
@@ -124,7 +118,7 @@ def build_dashboard(payloads: dict, out_path: Path) -> Path:
             lanes.append(dict(label=pk['strategy'],
                               color=lane_colors[li % len(lane_colors)], items=items))
 
-        # 相邻泳道之间连线, 表示时间上重叠(容忍 ±TOL 个交易日)的集群
+        # 相邻泳道中时间重叠的集群连线
         links = []
         for li in range(len(keys) - 1):
             for ca in per_key[keys[li]]:
@@ -135,8 +129,7 @@ def build_dashboard(payloads: dict, out_path: Path) -> Path:
         def _base_of(pk, field):
             ba = pk['meta'].get('baseline_all') or {}
             gw = pk['params']['grade_window']
-            # JSON 对象键一律是字符串, Python 侧 baseline_all 用的是 int 键,
-            # 往返后会变成 '252'。两种都试。
+            # JSON 往返后 int 键会变成字符串，两种都试
             return (ba.get(str(gw)) or ba.get(gw) or {}).get(field)
 
         head_cells = ''.join(f'<th>{payloads[k]["strategy"]}</th>' for k in keys)
@@ -407,8 +400,7 @@ DASHBOARD_JS = r"""
 
 
 def build_all(payloads: dict, out_dir: Path) -> list[Path]:
-    """只产出 dashboard.html。参数实验室(lab.html)已经独立成 lab.py, 要生成
-    的话单独运行 `python lab.py`, 不在这个默认流程里。"""
+    """生成 dashboard.html（lab.html 由 lab.py 单独生成）。"""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     return [build_dashboard(payloads, out_dir / 'dashboard.html')]

@@ -1,24 +1,13 @@
 """
-lab.py —— 参数实验室, 独立的个人调参工具
+参数实验室：生成 lab.html，在浏览器里拖滑块实时重算轻参数。
 
-这不是要交付的东西, 是自己拖滑块试参数用的。跟 hindenburg.py / viz.py 的
-主流程完全解耦: 不在 `python hindenburg.py viz` 的默认产出里, 不会被别人
-以为是正式报告的一部分。
+用法：
+    python hindenburg.py export     # 先导出带中间序列的 JSON
+    python lab.py                   # 读 output/export_*.json，生成 output/lab.html
+    python lab.py <目录>            # 指定别的导出目录
 
-用法:
-    python hindenburg.py export        # 先导出中间序列(带 index_close/
-                                        # high_ratio/low_ratio/new_high/
-                                        # new_low/mcclellan 这些字段的 JSON)
-    python lab.py                      # 读 output/export_*.json, 生成 lab.html
-    python lab.py 其它目录              # 指定别的导出目录
-
-原理: 导出的 JSON 里带着中间序列, 四条件判定、集群划分、回撤评级全都能由
-它们在浏览器里推出来。assets/backtest.js 逐行镜像了 hindenburg.py 的回测
-函数(已用合成数据逐位验证结果一致), 所以拖轻参数滑块不用重跑 Python。
-
-重参数(EMA周期/52周窗口/可交易域规则/基准指数)决定的是这些中间序列本身,
-浏览器里没有全市场股票面板, 算不出来, 只能重跑 `python hindenburg.py run`。
-面板上重参数是只读展示, 不会让人以为它也能拖着实时改。
+原理：导出的 JSON 带着中间序列，assets/backtest.js 用和 Python 相同的逻辑重算
+四条件、集群和回撤。重参数决定中间序列本身，浏览器里算不了，只做只读展示。
 """
 from __future__ import annotations
 
@@ -29,7 +18,7 @@ from pathlib import Path
 import config
 from viz import _asset, _head, LEVEL_COLOR
 
-# 参数实验室专属样式。仪表盘不用这些, 所以没有留在 viz.py 的 DASHBOARD_CSS 里。
+# 参数实验室专用样式
 LAB_CSS = """
 .lab-layout{display:grid; grid-template-columns:300px 1fr; gap:20px; align-items:start;}
 @media (max-width:900px){ .lab-layout{grid-template-columns:1fr;} }
@@ -64,6 +53,7 @@ LAB_CSS = """
 
 
 def build_lab(payloads: dict, out_path: Path) -> Path:
+    """payloads: {键: 导出的 JSON}，写出 lab.html。"""
     keys = list(payloads)
     btns = '\n'.join(
         f'<button class="toggle-btn{" active" if i == 0 else ""}" data-cfg="{k}" type="button">'
@@ -340,6 +330,7 @@ LAB_JS = r"""
 
 
 def _load_payloads(out_dir: Path) -> dict:
+    """读取目录下所有 export_*.json（包括 export_unadj.py 的对照组）。"""
     payloads = {}
     for p in sorted(out_dir.glob('export_*.json')):
         key = p.stem[len('export_'):]

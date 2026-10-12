@@ -1,14 +1,16 @@
 """
-jq_source.py —— 聚宽 (JoinQuant) 数据源, 本项目唯一的远端来源
+聚宽（JoinQuant）数据源，本项目唯一的远端数据来源。
 
-账号可能是部门共用的, 所以这个模块的设计目标是"尽量不用":
-    1. 每次拉取前先查 get_query_count(), 剩余额度低于 JQ_RESERVE 直接拒绝,
-       由调用方兜底用本地数据。
-    2. 单次运行累计行数不超过上限, 防止代码写错时把额度刷光。
-    3. 拉取前按交易日估算行数并打印, 心里有数再动手。
-    4. JQ_DRY_RUN=1 只打印计划、不真拉。
+    认证与额度    jq_auth / quota / guard
+    代码转换      to_jq_code / from_jq_code（.SH/.SZ/.BJ ↔ .XSHG/.XSHE/.BJSE）
+    指数          JQSource（供 IndexStore 调用）
+    成分股        fetch_constituents
+    面板更新      update_price_panel / update_state_table
 
-参数见 config.py 的 JQ_* 段。
+额度保护（参数见 config.py 的 JQ_*）：
+    · 拉取前先查剩余额度，扣完会低于 JQ_RESERVE 就拒绝
+    · 单次运行累计行数有上限，防止代码出错把额度刷光
+    · JQ_DRY_RUN=1 只打印计划，不真拉
 """
 
 from __future__ import annotations
@@ -21,8 +23,8 @@ import pandas as pd
 
 import config
 
-_jq = None            # 模块级句柄, 保证只 auth 一次
-_used_rows = 0        # 本次运行累计消耗(估算)
+_jq = None            # 已认证的 jqdatasdk 模块，保证只认证一次
+_used_rows = 0        # 本次运行累计消耗的行数（估算）
 
 
 # =====================================================================
@@ -30,7 +32,7 @@ _used_rows = 0        # 本次运行累计消耗(估算)
 # =====================================================================
 
 def jq_auth(user: Optional[str] = None, password: Optional[str] = None):
-    """幂等认证。重复 auth 会挤掉自己上一个会话, 所以只做一次。"""
+    """认证聚宽，只做一次（重复认证会挤掉自己的上一个会话）。"""
     global _jq
     if _jq is not None:
         try:
@@ -75,16 +77,13 @@ def quota_str() -> str:
 
 
 def est_rows(start, end, n_codes: int = 1) -> int:
-    """按每年 245 个交易日估算行数"""
+    """按每年 245 个交易日估算行数。"""
     days = (pd.Timestamp(end) - pd.Timestamp(start)).days
     return max(1, int(days / 365 * 245) + 5) * n_codes
 
 
 def guard(need: int, cap: Optional[int] = None):
-    """
-    拉取前的两道闸: 给别人留的余量 + 自己的上限。
-    指数更新和面板更新共用这一套, 只有 cap 不同(面板量级大得多)。
-    """
+    """拉取前检查：本次累计不超过 cap，且扣完后剩余额度不低于 JQ_RESERVE。"""
     cap = cap if cap is not None else config.JQ_MAX_ROWS
 
     if _used_rows + need > cap:
@@ -124,12 +123,8 @@ _ALIAS = {
 
 def to_jq_code(code: str) -> str:
     """
-    000985.CSI -> 000985.XSHG。聚宽不认 .SH/.SZ/.CSI 后缀。
-
-    北交所必须显式处理成 .BJSE。之前 .BJ 后缀走到最后的兜底分支被拼成
-    920981.XSHG —— 一个不存在的代码, 于是 574 只北交所股票在
-    update_price_panel 里全被 _classify 判成 'unknown' 静默跳过, 面板里
-    永远是 NaN。这种错法没有任何报错, 只表现为"某个板块的数据就是没有"。
+    面板代码 → 聚宽代码，例如 000985.CSI → 000985.XSHG，830799.BJ → 830799.BJSE。
+    没有后缀时按代码段判断交易所。
     """
     if code in _ALIAS:
         return _ALIAS[code]
@@ -143,7 +138,7 @@ def to_jq_code(code: str) -> str:
         return f'{num}.XSHE'
     if suf in ('BJ', 'BSE', 'BJSE', 'NQ'):
         return f'{num}.BJSE'
-    # 无后缀时按代码段兜底: 8/4/920 开头是北交所, 399/395 在深交所, 其余上交所
+    # 无后缀：8/4/920 开头为北交所，399/395 为深交所，其余为上交所
     if num.startswith(('8', '4', '920')):
         return f'{num}.BJSE'
     return f'{num}.XSHE' if num.startswith(('399', '395')) else f'{num}.XSHG'
@@ -154,7 +149,7 @@ def to_jq_code(code: str) -> str:
 # =====================================================================
 
 class JQSource:
-    """聚宽指数源。只提供 fetch, 由 IndexStore 决定何时调用。"""
+    """聚宽指数收盘价源，只负责 fetch；何时调用由 IndexStore 决定。"""
 
     name = 'jq'
 
@@ -174,12 +169,13 @@ class JQSource:
         return df
 
     def fetch(self, code: str, start: str, end: str) -> pd.Series:
+        """拉取 [start, end] 的收盘价；没有数据时返回空序列而不是报错。"""
         jq_code = to_jq_code(code)
         guard(est_rows(start, end))
 
         df = self._get(jq_code, start, end)
 
-        # 后缀猜错时换一个交易所重试一次
+        # 交易所猜错时换一个再试一次
         if (df is None or df.empty) and jq_code.endswith(('.XSHG', '.XSHE')):
             alt = (jq_code.replace('.XSHG', '.XSHE') if jq_code.endswith('.XSHG')
                    else jq_code.replace('.XSHE', '.XSHG'))
@@ -190,7 +186,7 @@ class JQSource:
 
         empty = pd.Series(dtype='float64', name=code, index=pd.DatetimeIndex([]))
         if df is None or df.empty:
-            # 增量补最新几天时返回空是正常的, 不该抛异常打断回测
+            # 增量补最近几天时为空是正常的
             days_back = (pd.Timestamp.today().normalize() - pd.Timestamp(start)).days
             if days_back <= 10 or config.JQ_DRY_RUN:
                 print(f'[JQ] {code} 区间 {start}~{end} 暂无新数据')
@@ -203,10 +199,7 @@ class JQSource:
                       index=pd.to_datetime(df.index), name=code).dropna().sort_index()
         s = s[~s.index.duplicated(keep='last')]
         if s.empty:
-            # get_price 对早于指数真实起点的区间返回的不是空表, 而是"日期
-            # 齐全但值全 NaN"的表 —— df.empty 是 False, 但 dropna 之后就
-            # 空了。不特判这个的话, s.index.min() 是 NaT, 后面 strftime
-            # 直接崩(NaTType does not support strftime)。
+            # 早于指数起点的区间，聚宽返回的是「日期齐全但值全 NaN」的表
             print(f'[JQ] ⚠ {code} 在 {start}~{end} 只有空值行, 判定为无数据'
                   f'(该指数在这段时间可能尚未开始编制)')
             return empty
@@ -218,10 +211,8 @@ class JQSource:
     @staticmethod
     def search(keyword: str) -> pd.DataFrame:
         """
-        按名称模糊查指数代码, 例: JQSource.search('中证全指')
-
-        供在 REPL 里手动查代码用(往 config.STRATEGIES 里加新指数时要先知道
-        它的代码), 主流程不调用它 —— 不是死代码, 别顺手删了。
+        按名称模糊查找指数代码，例如 JQSource.search('中证全指')。
+        主流程不调用，供新增策略时在交互环境里手动查代码。
         """
         jq = jq_auth()
         idx = jq.get_all_securities(types=['index'])
@@ -229,13 +220,7 @@ class JQSource:
 
 
 def from_jq_code(code: str) -> str:
-    """
-    聚宽代码 -> 面板代码。to_jq_code 的逆运算。
-
-    成分股名单是用聚宽代码(.XSHG/.XSHE/.BJSE)返回的, 而价格面板的列名是
-    .SH/.SZ/.BJ。不转换的话 reindex 到 px.columns 一个都对不上, 成分股掩码
-    全 False, 可交易域变成空 —— 而且不会报错, 只是静默算不出任何信号。
-    """
+    """聚宽代码 → 面板代码（to_jq_code 的逆运算）。"""
     num, _, suf = str(code).partition('.')
     return {'XSHG': f'{num}.SH', 'XSHE': f'{num}.SZ',
             'BJSE': f'{num}.BJ'}.get(suf.upper(), str(code))
@@ -244,14 +229,10 @@ def from_jq_code(code: str) -> str:
 def fetch_constituents(index_code: str, start: str, end: str,
                        out_dir: str = None, freq: str = 'ME') -> Path:
     """
-    从聚宽拉指数成分股, 存成 constituents() 认得的格式。
+    拉取指数成分股并保存为 index_constituents_<代码>.pkl。
 
-    聚宽的 get_index_weights 一次只能取一个日期的名单, 所以按月末采样再
-    前向填充 —— 成分股本来就只在调仓日(半年一次)变动, 月频足够, 而日频
-    要多打上千次接口, 纯属浪费。
-
-    输出格式: MultiIndex(date, code) 的 DataFrame, 含 weight 列。
-    这正是 Panel.constituents() 期望的结构(它只看 weight 是否 notna)。
+    按月末采样（成分股半年调一次，月频足够），
+    输出 MultiIndex(date, code)、含 weight 列，代码统一为面板格式。
     """
     jq = jq_auth()
     jq_code = to_jq_code(index_code)
@@ -276,7 +257,7 @@ def fetch_constituents(index_code: str, start: str, end: str,
         raise ValueError(f'{index_code} 没取到任何成分股, 检查代码或账号权限')
 
     out = pd.concat(frames).sort_index()
-    # 代码统一成面板用的 .SH/.SZ 后缀, 否则 reindex 到 px.columns 会全部对不上
+    # 统一成面板的代码格式，否则和价格面板的列对不上
     codes = out.index.get_level_values('code').map(from_jq_code)
     out.index = pd.MultiIndex.from_arrays(
         [out.index.get_level_values('date'), codes], names=['date', 'code'])
@@ -296,15 +277,10 @@ def _isolate_bad_codes(jq, jq_codes: list[str], probe_date: str,
                        fields: list[str], batch_size: int = None
                        ) -> tuple[list[str], list[tuple[str, str]]]:
     """
-    一次性找出这批代码里聚宽认不出的那些(改名/退市多年/合并等历史遗留),
-    用二分隔离而不是逐个试——几千只逐个试太慢, 而坏代码通常只有个位数。
+    找出聚宽不认识的代码（改名、退市多年等），返回 (可用代码, [(坏代码, 报错)])。
 
-    只用一个探测日期跑一次, 不是每天都重新隔离一遍: 一个代码"是否存在于
-    聚宽的证券库里"跟具体哪天无关, 隔离一次的结果对整个更新区间都成立。
-
-    batch_size 默认到函数体内才取 BATCH_SIZE —— 这个函数定义在 BATCH_SIZE
-    赋值之前, 参数默认值若直接写 BATCH_SIZE 会在模块导入时立刻报
-    NameError(默认值是定义时求值, 不是调用时)。
+    聚宽批量请求里只要有一个无效代码就整批报错，所以用二分法隔离。
+    只在一个探测日期上查一次即可。
     """
     batch_size = batch_size or BATCH_SIZE
     bad = []
@@ -335,21 +311,15 @@ def _isolate_bad_codes(jq, jq_codes: list[str], probe_date: str,
 def update_state_table(state_path: Path, end: Optional[str] = None,
                        dry_run: bool = False) -> None:
     """
-    stock_state.pkl 的增量更新。
+    把 stock_state.pkl 增量更新到最新交易日（旧文件备份为 .pkl.bak）。
 
-    为什么必须单独做: update_price_panel 只更新价格, 状态表是另一个文件。
-    两者不同步时 Panel.universe 会对状态掩码做 reindex().fillna(False),
-    于是状态表覆盖不到的交易日可交易域全空, _trim_tail 直接把那几天砍掉
-    —— 价格明明更新到了最新, 回测终点却停在状态表的最后一天, 而且看起来
-    像是"最近没信号"。
-
-    字段口径与既有文件保持一致:
-      trade_status  中文状态字符串('交易'/'停牌一天'/...)
-      status_t      1=当日可交易, 0=不可
-      maxupdown     1=涨停 / -1=跌停 / 0=否
-      isst/issts    ST / *ST 标记
-      issusp        暂停上市
-      lenlist       上市天数(自然日)
+    新增行的字段与原文件一致：
+        trade_status  '交易' / '停牌一天'（原数据的中文取值）
+        status_t      1 = 当日可交易，0 = 不可
+        maxupdown     1 = 涨停，-1 = 跌停，0 = 否
+        isst / issts  ST / *ST（聚宽只给 is_st，两列填同一个值）
+        issusp        暂停上市（固定填 0）
+        lenlist       上市自然日数
     """
     old = pd.read_pickle(state_path)
     last_date = pd.to_datetime(old.index.get_level_values('trade_dt')).max()
@@ -376,9 +346,7 @@ def update_state_table(state_path: Path, end: Optional[str] = None,
     back = {j: c for j, c in zip(jq_codes, codes)}
 
     fields = ['close', 'paused', 'high_limit', 'low_limit']
-    # 聚宽对批量请求里任何一个无效代码都是整批直接报错, 不是跳过那一只
-    # (老代码改名/退市多年/合并这类历史遗留很常见)。先用二分隔离一次,
-    # 把坏代码摘出来, 后面 35 天都用干净的列表查, 不用每天都重新踩一遍雷。
+    # 先剔除聚宽不认识的代码，否则整批请求会失败
     good_codes, bad_codes = _isolate_bad_codes(jq, jq_codes, str(days[-1].date()), fields)
     if bad_codes:
         print(f'{len(bad_codes)} 只代码聚宽认不出, 已从本次更新中剔除:')
@@ -447,7 +415,7 @@ def update_state_table(state_path: Path, end: Optional[str] = None,
         return
 
     new = pd.concat(frames)
-    new = new.reindex(columns=old.columns)         # 列顺序/集合与旧文件严格一致
+    new = new.reindex(columns=old.columns)         # 列与旧文件保持一致
     out = pd.concat([old, new])
     out = out[~out.index.duplicated(keep='last')].sort_index()
 
@@ -465,7 +433,7 @@ def update_state_table(state_path: Path, end: Optional[str] = None,
 
 
 def make_source(allow_remote: bool = True):
-    """本项目唯一的远端源。HO_OFFLINE=1 或显式禁用时返回 None(纯本地)。"""
+    """返回聚宽指数源；离线、未安装 jqdatasdk 或未配置账号时返回 None（纯本地）。"""
     if config.OFFLINE or not allow_remote:
         print('[Store] 纯本地模式, 不联网')
         return None
@@ -484,7 +452,7 @@ def make_source(allow_remote: bool = True):
 # 股票价格面板增量更新
 # =====================================================================
 
-BATCH_SIZE = 2500  # 单次 get_price 查询的证券数上限, 留余量避免顶到接口限制
+BATCH_SIZE = 2500  # 单次 get_price 请求的股票数上限
 
 
 def _fetch_close_wide(jq, jq_codes: list[str], start: str, end: str, fq) -> pd.DataFrame:
@@ -497,13 +465,7 @@ def _fetch_close_wide(jq, jq_codes: list[str], start: str, end: str, fq) -> pd.D
 
 def _fetch_in_batches(jq, jq_codes: list[str], start: str, end: str, fq,
                       batch_size: int = BATCH_SIZE) -> list[pd.DataFrame]:
-    """
-    分批拉取, 单批失败时二分裂开重试, 把坏代码隔离到最小范围。
-
-    聚宽对整批请求里的任何一个无效代码都会直接报错(而不是跳过那一只),
-    所以哪怕上游已经按上市/退市日期筛过, 仍可能有个别代码因为改名、转板、
-    合并等原因失效。二分隔离保证一颗老鼠屎最多只坏掉它自己。
-    """
+    """分批拉取收盘价；某批失败时二分重试，只跳过真正出错的代码。"""
     parts, bad = [], []
 
     def pull(codes, depth=0):
@@ -541,10 +503,7 @@ def _fetch_in_batches(jq, jq_codes: list[str], start: str, end: str, fq,
 def _classify(securities: pd.DataFrame, jq_codes: list[str],
               last_date: pd.Timestamp) -> dict[str, str]:
     """
-    用真实上市/退市日期给每只股票分类, 而不是只看锚点日有没有价格——
-    "还没上市"和"已经退市"在锚点日看起来都是 NaN, 分不清楚。若只按
-    "锚点日 NaN"判定为新股去拉数据, 一只早就退市的股票会被当成新股
-    重新灌入增量数据, 相当于让死掉的股票复活。
+    按聚宽的上市 / 退市日期给股票分类（只看价格是否为 NaN 分不清未上市和已退市）。
 
     返回 {jq_code: 'normal' | 'new_listing' | 'delisted' | 'unknown'}
     """
@@ -569,19 +528,7 @@ def _classify(securities: pd.DataFrame, jq_codes: list[str],
 
 
 def latest_trade_day() -> pd.Timestamp:
-    """
-    最后一个"已收盘"的交易日 —— 唯一的交易日历来源。
-
-    本地 pkl 里只有已经落盘的历史交易日, 无法告诉你"今天算不算交易日"
-    或者"上一个交易日是哪天", 所以这件事只能问聚宽。
-
-    直接拿 today 当截止日会有两种取不到最新数据的情况:
-      ① 今天是周末/节假日, 根本没有行情
-      ② 今天是交易日但还没收盘(A股 15:00 收盘, 数据落库更晚),
-         此时聚宽要么返回空, 要么返回一根不完整的日线
-    所以走交易日历: 取日历上 <= 今天 的最后一个交易日; 如果它就是今天而
-    当前时间还没到 15:30, 就再往前退一天。
-    """
+    """最近一个已收盘的交易日（按聚宽交易日历；当天 15:30 前算前一个交易日）。"""
     jq = jq_auth()
     return _last_closed_trade_day(jq)
 
@@ -591,7 +538,7 @@ def _last_closed_trade_day(jq) -> pd.Timestamp:
     try:
         days = jq.get_trade_days(end_date=str(today.date()), count=10)
     except Exception:
-        return today          # 日历取不到就退回原行为, 不因此中断更新
+        return today          # 取不到日历就用今天
     if len(days) == 0:
         return today
     days = [pd.Timestamp(d) for d in days]
@@ -605,21 +552,14 @@ def _last_closed_trade_day(jq) -> pd.Timestamp:
 def update_price_panel(panel_path: Path, end: Optional[str] = None,
                        dry_run: bool = False, local_table=None):
     """
-    增量补齐 stock_price_adj_close.pkl 到最新交易日。
+    把 stock_price_adj_close.pkl 增量更新到最新交易日（旧文件备份为 .pkl.bak）。
 
-    复权拼接: 后复权价格的换算基准会随除权除息变化。直接拿聚宽今天算出的
-    绝对后复权价去拼接旧文件, 一旦增量区间内有股票分红送股, 接缝处会出现
-    跳变——不是真实涨跌, 是复权基准不一致导致的假信号。
+    拼接方法：拉一段后复权价，只取其中的日涨跌幅，再从旧文件最后一天的价格
+    往后复利滚算。这样即使期间有分红送股（复权基准变了），接缝处也不会跳变。
 
-    解决: 只用比率不用绝对值 —— 拉一段 **后复权** 价, 在这段内部算每日
-    涨跌幅, 再在旧文件最后一天的价格上复利滚算。后复权序列在同一次请求内
-    基准一致, 所以它的 pct_change 就是真实收益率; 而比率与基准无关, 接缝
-    自然连续。
-
-    这里绝不能用不复权价(fq=None)算涨跌幅: 不复权价在除权除息日会断崖下跌,
-    那个跌幅不是收益率。用它 cumprod 会给每一只在增量区间内分红送股的股票
-    灌进一个凭空的暴跌 —— 而"大量个股同时创新低"正是本策略条件②③的触发
-    条件, 这种脏数据会直接伪造出信号。
+    注意：
+      · 不能用不复权价算涨跌幅，除权日的断崖下跌会被当成真实下跌，伪造出新低。
+      · 只更新面板里已有的股票，之后新上市的股票不会自动加列。
     """
     px = pd.read_pickle(panel_path)
     px.index = pd.to_datetime(px.index)
@@ -641,10 +581,7 @@ def update_price_panel(panel_path: Path, end: Optional[str] = None,
     jq_codes = list(code_map.values())
     inv_map = {v: k for k, v in code_map.items()}
 
-    # 分类必须在拉取之前。面板里有历史遗留的早已退市代码(如 000003.SZ 深金田A,
-    # 2002年退市), 聚宽会对整批请求报"无效的证券代码"而不是跳过那一只, 一颗
-    # 老鼠屎坏一锅汤。先按真实上市/退市日期筛掉, 再去请求。
-    # 证券基础信息走本地缓存, 一天之内重复运行不再调 API。
+    # 先按上市 / 退市日期分类，只请求正常交易的股票（退市代码会让整批请求失败）
     print('[Panel] 按真实上市/退市日期分类 (区分"新股"/"退市股"/"无效代码")...')
     loader = lambda: jq.get_all_securities(types=['stock'])  # noqa: E731
     securities = local_table.get('securities', loader) if local_table else loader()
@@ -658,7 +595,6 @@ def update_price_panel(panel_path: Path, end: Optional[str] = None,
         skip_eg = [c for c, v in cls_local.items() if v in ('delisted', 'unknown')][:5]
         print(f"[Panel] 跳过 {n['delisted'] + n['unknown']} 只不该请求的代码, 例: {skip_eg}")
 
-    # 只请求"正常"股票的涨跌幅; 新股在后面单独用后复权价补
     fetch_codes = [code_map[c] for c, v in cls_local.items()
                    if v == 'normal' and c in px.columns]
     if not fetch_codes:
@@ -701,7 +637,7 @@ def update_price_panel(panel_path: Path, end: Optional[str] = None,
     for code in px.columns:
         status = cls_local.get(code, 'unknown')
         if status in ('delisted', 'new_listing') or code not in pct.columns:
-            continue          # 退市股保持 NaN; 新股走下面的分支
+            continue          # 退市股保持 NaN
         base = anchor.get(code)
         if pd.isna(base):
             continue

@@ -1,18 +1,14 @@
 """
-data.py —— 数据层
+数据层：读取本地数据、计算市场宽度指标，以及各级本地缓存。
 
-    Panel        本地 pkl 价格面板 + 每日可交易域
-    breadth      52周新高新低 / McClellan
-    BreadthCache 宽度指标磁盘缓存
-    IndexStore   基准指数本地 parquet
-    LocalTable   通用小表本地缓存(证券基础信息等)
+    Panel         价格面板 + 每日可交易域（哪些股票当天计入统计）
+    new_high_low  52 周新高 / 新低家数与占比（条件②③）
+    mcclellan     McClellan 振荡器（条件④）
+    BreadthCache  宽度指标的磁盘缓存
+    LocalTable    小表缓存（证券基础信息等）
+    IndexStore    指数收盘价的本地存储，缺口才去聚宽补
 
-本地优先原则贯穿全部四类数据, 顺序一律是"先查本地, 缺了才联网":
-    价格面板  本地 pkl, 只有 `hindenburg.py update-panel` 会主动联网增量补
-    指数收盘  本地 index_store/*.parquet, 只补缺口, 缺口拿不到会记进 meta 不再重试
-    宽度指标  本地 .cache/breadth_*.pkl, 键含全部参数与源文件 mtime
-    证券信息  本地 .cache/securities.parquet, 隔日才刷新
-远端数据源只有聚宽一个(见 jq_source.py)。
+所有数据都是「先查本地，缺了才联网」，远端只有聚宽（见 jq_source.py）。
 """
 
 from __future__ import annotations
@@ -29,17 +25,16 @@ import config
 
 
 # =====================================================================
-# 面板数据
+# 价格面板与可交易域
 # =====================================================================
 
 class Panel:
     """
-    本地 pkl 面板数据
+    本地 pkl 面板数据（文件在 data_dir 下递归查找）：
 
-    必需: stock_price_adj_close.pkl   后复权收盘价 (index=日期, columns=股票)
-    可选: stock_state.pkl             状态长表 MultiIndex(日期,股票)
-          index_constituents_*.pkl    成分股权重
-    文件在 data_dir 下递归查找, 放子目录也能找到。
+        stock_price_adj_close.pkl   必需  后复权收盘价，index=日期，columns=股票
+        stock_state.pkl             可选  状态长表 MultiIndex(日期, 股票)
+        index_constituents_*.pkl    可选  指数成分股
     """
 
     def __init__(self, data_dir: str = None, state_rule: str | Callable = 'rule_default',
@@ -68,21 +63,14 @@ class Panel:
         hits = list(self.dir.rglob(name))
         return hits[0] if hits else None
 
-    # ---------- 列过滤 ----------
+    # ---------- 价格 ----------
 
     def _filter_columns(self, px: pd.DataFrame) -> pd.DataFrame:
         """
-        剔掉不该进该策略"股票池"的列:
-
-          ① 非 6 位数字代码 —— 面板里混着 T00018.SH 这种非普通股标的
-          ② exclude_boards 指定的交易所 —— 默认剔北交所
-          ③ include_exchanges 非空时, 只保留白名单里的交易所
-
-        为什么必须过滤: 条件②③④(宽度)的股票池要和条件①(趋势)的指数是同一批
-        标的, 否则两边说的不是同一个市场。上证综指只含沪市约2300只, 而全市场
-        有5200只 —— 不限定的话超过一半的宽度来自指数外的深市个股。
-        有固定成分名单的指数(300/500/1000)走 universe() 里的 constituents(),
-        比按交易所切更精确。
+        只保留属于本策略股票池的列：
+            ① 剔除非 6 位数字代码（如 T00018.SH 这类非普通股）
+            ② 剔除 exclude_boards 里的交易所（默认北交所）
+            ③ include_exchanges 非空时，只保留这些交易所
         """
         drop_bad = [c for c in px.columns if not str(c)[:6].isdigit()]
         drop_board = [c for c in px.columns
@@ -107,10 +95,9 @@ class Panel:
                 f'include_exchanges={self.include_exchanges}), 检查配置')
         return out
 
-    # ---------- 价格 ----------
-
     @property
     def prices(self) -> pd.DataFrame:
+        """过滤后的后复权收盘价（首次访问时读盘，转 float32 省一半内存）。"""
         if self._px is None:
             p = self.find('stock_price_adj_close.pkl')
             if p is None:
@@ -122,8 +109,6 @@ class Panel:
             px = pd.read_pickle(p)
             px.index = pd.to_datetime(px.index)
             px = self._filter_columns(px)
-            # 6000+ 只 x 6000+ 天的 float64 约 300MB, 降到 float32 省一半。
-            # 滚动极值只做比较, 精度足够。
             if self.float32:
                 px = px.astype('float32')
             self._px = px
@@ -131,13 +116,13 @@ class Panel:
 
     @property
     def last_date(self) -> pd.Timestamp:
-        """面板最后一个交易日 —— 用它当回测终点, 避免把 END 写成未来日期"""
+        """面板最后一个交易日，作为默认回测终点。"""
         return self.prices.index[-1]
 
-    # ---------- 状态 ----------
+    # ---------- 状态表 ----------
 
     def _col(self, name: str) -> pd.DataFrame:
-        """按列名展开状态长表为宽表。只展开规则用到的列, 展开前降位宽以省内存。"""
+        """把状态长表的一列展开成宽表（日期 × 股票），并缓存。"""
         if name in self._cols:
             return self._cols[name]
         if name not in self._raw.columns:
@@ -156,7 +141,7 @@ class Panel:
 
     @property
     def state_mask(self) -> Optional[pd.DataFrame]:
-        """可交易 bool 宽表; 无 stock_state.pkl 时返回 None"""
+        """按 state_rule 得到的可交易 bool 宽表；没有 stock_state.pkl 时返回 None。"""
         if self._mask is None:
             p = self.find('stock_state.pkl')
             if p is None:
@@ -166,58 +151,43 @@ class Panel:
                 self._raw = pd.read_pickle(p)
                 self._cols = {}
                 self._mask = self.state_rule(self._col)
-                self._raw, self._cols = None, {}      # 用完释放
+                self._raw, self._cols = None, {}      # 用完释放内存
         return self._mask if self._mask is not False else None
 
-    # ---------- 可交易域规则 ----------
-    # col 是取列函数, 用法 col('status_t')
+    # ---------- 可交易域规则（col('列名') 取宽表）----------
 
     @staticmethod
     def rule_default(col):
         """
-        默认: 当日有成交 + 上市满一年
-
-        status_t == 1  当日有成交 (含盘中短时停牌, 这些仍有真实收盘价)
-        lenlist        上市自然日数 —— 是自然日不是交易日, 52周需 >= 365
-
-        不剔 ST/*ST: 研报口径为全市场, 且 ST 是创新低主力。
+        当日有成交（status_t == 1）且上市满一年（lenlist ≥ 365 个自然日）。
+        不剔 ST：研报口径是全市场，而且 ST 股是创新低的主力。
         """
         return ((col('status_t') == 1) & (col('lenlist') >= 365)).fillna(False)
 
     @staticmethod
     def rule_strict(col):
-        """额外剔除 ST 与 *ST"""
+        """在 rule_default 基础上再剔除 ST 与 *ST。"""
         return ((col('status_t') == 1) & (col('lenlist') >= 365)
                 & (col('isst') == 0) & (col('issts') == 0)).fillna(False)
 
     @staticmethod
     def rule_trade_status(col):
         """
-        改用 trade_status 字符串判定, 用于交叉验证
-
-        用白名单('交易')而非黑名单: 实测该列有 12 种非"交易"取值(停牌一天/
-        停牌1小时/停牌半天/盘中停牌/暂停上市/...), 逐个列举容易漏, 且新出现
-        的停牌措辞会静默漏判。
+        用 trade_status 字段判断，用于交叉验证。
+        只认 '交易'（白名单）：停牌的写法有十几种，用黑名单容易漏。
         """
         ts = col('trade_status')
         return (ts.eq('交易') & (col('lenlist') >= 365)).fillna(False)
 
-    # ---------- 无状态表时的退化推断 ----------
-
     @property
     def inferred_mask(self) -> pd.DataFrame:
         """
-        无 stock_state.pkl 时, 仅凭价格判定可交易域:
-            ① 有价格
-            ② 累计已出现的交易日数 >= 252 (上市满一年, 够 52 周窗口)
-            ③ 近 5 日价格不是完全不动 (长期停牌被前值填充)
+        没有状态表时，只凭价格推断可交易域：
+            ① 当天有价格
+            ② 累计已有 ≥ 252 个交易日的价格（约上市满一年）
+            ③ 最近 5 天价格不是一动不动（排除长期停牌被前值填充）
 
-        必须在完整面板上算再切片。若对切片后的价格做 cumsum, 计数会从切片
-        起点重新开始, 结果是预热段全体不可交易 —— 那预热就白留了。
-
-        ② 用 cumsum 而非 rolling(252).sum(): cumsum 单调, 语义是"上市至今
-        已有多少个交易日", 与 lenlist 口径一致; rolling 在退市转 NaN 后会
-        把之前的历史一起作废。
+        必须在完整面板上计算后再切片，否则 ② 的累计天数会从切片起点重新数。
         """
         if self._inferred is None:
             px = self.prices
@@ -227,17 +197,17 @@ class Panel:
             self._inferred = listed & enough & ~frozen
         return self._inferred
 
-    # ---------- 可交易域 ----------
+    # ---------- 股票池 ----------
 
     def universe(self, start: str, end: str, index_code: Optional[str] = None,
                  warmup: int = 260, min_coverage: float = 0.5
                  ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
-        返回 (价格矩阵, 可交易bool掩码), 两者已对齐。
+        返回对齐好的 (价格矩阵, 可交易 bool 矩阵)。
 
-        warmup: 在 start 之前额外多取的交易日数。52周滚动极值需要 252 天预热,
-        不留预热期的话回测头一年的 new_high/new_low 全是 NaN, 条件②恒 False,
-        等于白白丢掉一年样本。调用方拿到结果后自行裁到 start。
+        warmup:     在 start 之前多取的交易日数（52 周滚动指标需要预热），
+                    调用方拿到结果后自行裁到 start。
+        index_code: 只保留该指数的成分股。
         """
         px_all = self.prices
         i0 = px_all.index.searchsorted(pd.Timestamp(start))
@@ -249,11 +219,7 @@ class Panel:
 
         mask = self.state_mask if self.state_mask is not None else self.inferred_mask
         m = mask.reindex(index=px.index, columns=px.columns)
-        # infer_objects() 对这里没用: reindex 引入的 NaN 和原有的 True/False
-        # 混在同一个 object 数组里, numpy 的 bool 类型装不下 NaN, 推断不出
-        # 单一类型, infer_objects 转完还是 object, 后面 fillna 照样触发警告。
-        # 真正有效的做法: 先转成 pandas 的 nullable boolean(能装 NA), fillna
-        # 后再转回普通 bool —— 每一步类型都明确, 不需要靠隐式推断。
+        # reindex 产生的 NaN 和 True/False 混在 object 里，先转 nullable boolean 再填充
         valid = listed & m.astype('boolean').fillna(False).astype(bool)
 
         if index_code:
@@ -268,17 +234,11 @@ class Panel:
     def _trim_tail(px: pd.DataFrame, valid: pd.DataFrame, min_coverage: float
                    ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
-        截掉尾部可交易域塌陷的交易日。
+        截掉尾部股票数骤降的交易日。
 
-        为什么必须有这一步: stock_state.pkl 的最后一天可能早于价格面板的最后
-        一天(状态表和价格面板是两次更新, 不保证同步)。universe() 里对状态掩码
-        做 reindex().fillna(False), 于是状态表覆盖不到的那些交易日 valid 全为
-        False —— 可交易域是空的, new_high/new_low 恒 0, high_ratio 是 NaN,
-        信号恒 False。这不是"市场没信号", 是数据没到, 但两者在输出里长得一模
-        一样, 会被当成真实结论读。
-
-        判据用"相对中位数的覆盖率"而不是"是否为 0": 状态表边界附近往往是先
-        塌到很小再归零, 只查 0 会漏掉塌了一半的那几天。
+        状态表可能比价格面板少更新几天，这几天的可交易域会是空的，
+        算出来「没有信号」其实是「没有数据」。判据是当日股票数低于
+        中位数 × min_coverage。
         """
         n = valid.sum(axis=1)
         if not len(n) or n.max() == 0:
@@ -299,21 +259,17 @@ class Panel:
 
     def constituents(self, index_code: str) -> pd.DataFrame:
         """
-        成分股 bool 矩阵。名单只在调仓日更新, 需前向填充到每个交易日。
+        成分股 bool 宽表（日期 × 股票），名单前向填充到每个交易日。
 
-        文件名两种写法都认: 保留原点号的 index_constituents_000300.SH.pkl,
-        和把点换成下划线的 index_constituents_000300_SH.pkl。不同来源导出的
-        命名习惯不一样, 只支持一种会让"文件明明在那儿却报找不到"。
+        文件名 index_constituents_000300.SH.pkl 和 index_constituents_000300_SH.pkl
+        都认；本地没有时自动从聚宽拉取。
         """
         stem = index_code.replace('.', '_')
-        candidates = [f'index_constituents_{index_code}.pkl',   # 000300.SH
-                      f'index_constituents_{stem}.pkl']          # 000300_SH
+        candidates = [f'index_constituents_{index_code}.pkl',
+                      f'index_constituents_{stem}.pkl']
         p = next((f for f in (self.find(c) for c in candidates) if f), None)
 
         if p is None:
-            # 本地没有就直接去聚宽拉一次并落盘, 而不是抛错让整个策略失败。
-            # 成分股是"一次性补齐"的静态数据, 缺了就补, 没有理由要求用户
-            # 先手动跑一条命令、看到报错、再跑第二条。
             p = self._fetch_constituents(index_code)
 
         raw = pd.read_pickle(p)
@@ -326,7 +282,7 @@ class Panel:
         return m
 
     def _fetch_constituents(self, index_code: str) -> Path:
-        """本地缺成分股时的自动补齐。拉不到就把可行的补救办法一次说清楚。"""
+        """本地没有成分股时从聚宽拉取并落盘；拉不到时给出可行的补救办法。"""
         avail = sorted({x.stem.replace('index_constituents_', '')
                         for x in self.dir.rglob('index_constituents_*.pkl')})
         if config.OFFLINE:
@@ -339,7 +295,7 @@ class Panel:
             raise FileNotFoundError(f'本地没有 {index_code} 的成分股, 也无法导入 jq_source: {e}')
 
         print(f'[Panel] 本地无 {index_code} 成分股, 从聚宽拉取…')
-        # 起点跟着该指数所属策略走, 拉多了纯属浪费配额
+        # 起点用该指数对应策略的起点，避免多拉
         st = next((s for s in config.STRATEGIES.values()
                    if s.universe_index == index_code), None)
         start = (st.start if st else None) or config.START
@@ -356,31 +312,30 @@ class Panel:
     def equal_weight_index(px: pd.DataFrame, valid: pd.DataFrame,
                            base: float = 1000.0) -> pd.Series:
         """
-        等权代理指数 —— 本地/远端都拿不到真实指数时的兜底。
-        条件①只判断 MA50 方向, 对编制方式不敏感, 但口径与研报不同, 会打印警告。
+        等权代理指数，只在拿不到真实指数时兜底使用（会打印警告）。
+        单日收益截在 ±50%，避免停牌复牌的跨期涨跌带偏整条曲线。
         """
         ret = px.where(valid).pct_change(fill_method=None)
-        # 停牌复牌造成的跨期收益会被算成单日收益, 截尾避免个别票带偏整条曲线
         ret = ret.clip(-0.5, 0.5).mean(axis=1).fillna(0)
         return (1 + ret).cumprod() * base
 
 
 # =====================================================================
-# 市场宽度
+# 市场宽度指标
 # =====================================================================
 
 def new_high_low(px: pd.DataFrame, valid: pd.DataFrame,
                  window: int = 252, min_periods: int = 200) -> pd.DataFrame:
     """
-    52周新高/新低, 收盘价口径 (与研报公式一致):
-        p_hi = #{i : P_it = max_252 P_i} / N_t
+    52 周新高 / 新低（条件②③），收盘价口径：
+        新高 = 当日收盘价 ≥ 过去 window 日最高收盘价
 
-    必须用收盘价算滚动极值。若用最高价算 max 却拿收盘价比较,
-    因 high >= close 恒成立, 新高数会被系统性低估到接近 0。
+    返回列：new_high, new_low, universe（当日股票数）, high_ratio, low_ratio
 
-    min_periods < window 是刻意的: A股停牌普遍, 要求窗口内 252 个非 NaN
-    会让所有停过牌的票在复牌后一年内永远不计新高新低, 而这批票恰恰是
-    创新低的主力, 会系统性压低 low_ratio 进而压低条件②的触发率。
+    注意：
+      · 必须用收盘价算滚动极值；用最高价算极值再拿收盘价比较，新高会被严重低估。
+      · min_periods < window 是为了容忍停牌，否则停过牌的股票复牌后一年内
+        都不计新高新低，而它们正是创新低的主力。
     """
     roll = px.rolling(window, min_periods=min_periods)
     hi = ((px >= roll.max()) & valid).sum(axis=1)
@@ -396,13 +351,11 @@ def new_high_low(px: pd.DataFrame, valid: pd.DataFrame,
 def mcclellan(px: pd.DataFrame, valid: pd.DataFrame,
               short: int = 19, long: int = 39, norm: str = 'raw') -> pd.Series:
     """
-    McClellan 振荡器 = EMA19(净涨跌) - EMA39(净涨跌)
+    McClellan 振荡器（条件④）= EMA_short(净涨家数) − EMA_long(净涨家数)
 
-    norm='raw'   净涨跌 = A - D             与研报/原始定义一致
-    norm='rana'  净涨跌 = (A-D)/(A+D)*1000  比例调整版
-    A股可交易域从 2011 年约 2000 只涨到 2026 年约 5000 只, raw 口径的量纲
-    随标的数漂移。条件④只看符号, 对缩放不敏感, 但长样本上 rana 更干净,
-    建议至少用 rana 做一次稳健性对照。
+    norm:
+        raw   净涨家数 = 上涨家数 − 下跌家数（原始定义）
+        rana  (上涨 − 下跌) / (上涨 + 下跌) × 1000，不受股票总数增长影响
     """
     ret = px.pct_change(fill_method=None)
     a = ((ret > 0) & valid).sum(axis=1)
@@ -416,12 +369,15 @@ def mcclellan(px: pd.DataFrame, valid: pd.DataFrame,
             - net.ewm(span=long, adjust=False).mean())
 
 
+# =====================================================================
+# 本地缓存
+# =====================================================================
+
 class BreadthCache:
     """
-    宽度指标缓存 —— 本地优先的第三环
+    宽度指标的磁盘缓存（.cache/breadth_*.pkl）。
 
-    展开千万行状态表 + 对大矩阵做 252 日滚动极值是主要耗时, 产出却只有几千行。
-    缓存键含全部重参数与源文件 mtime, 数据或参数一变自动失效, 不会拿到陈旧结果。
+    缓存键包含全部重参数和源数据文件的修改时间，数据或参数一变自动失效。
     """
 
     def __init__(self, cache_dir: str = None):
@@ -436,9 +392,7 @@ class BreadthCache:
             p = panel.find(fn)
             parts.append(f'{fn}:{p.stat().st_mtime_ns if p else 0}')
         if index_code:
-            # 两种命名都试, 和 Panel.constituents 保持一致。只认一种的话,
-            # 用另一种命名的用户会让 mtime 恒为 0 —— 换了成分股文件缓存
-            # 也不失效, 静默拿到旧口径的宽度序列。
+            # 成分股文件两种命名都要试，和 Panel.constituents 一致
             p = (panel.find(f'index_constituents_{index_code}.pkl')
                  or panel.find(f"index_constituents_{index_code.replace('.', '_')}.pkl"))
             parts.append(f'cons:{p.stat().st_mtime_ns if p else 0}')
@@ -450,9 +404,7 @@ class BreadthCache:
             mc_norm: str = 'raw', min_coverage: float = 0.5,
             exclude_boards: tuple = ('BJ',),
             include_exchanges: tuple = ()) -> pd.DataFrame:
-        # exclude_boards / include_exchanges 影响的是 panel.prices 的列集合,
-        # 缓存键必须带上它们, 否则改了股票池会命中旧缓存, 拿到口径不符的
-        # 陈旧宽度序列 —— 而且不会有任何报错。
+        """返回宽度指标表（已裁掉预热段）；缓存命中直接读盘，否则计算并写盘。"""
         key = self._key(panel, start, end, index_code,
                         es=ema_short, el=ema_long, w=warmup,
                         win=hl_window, mp=hl_min_periods, mc=mc_norm,
@@ -480,17 +432,8 @@ class BreadthCache:
         print(f'[Cache] 已清空 {n} 个宽度缓存文件')
 
 
-# =====================================================================
-# 通用小表本地缓存
-# =====================================================================
-
 class LocalTable:
-    """
-    小表本地缓存(证券基础信息等) —— 本地优先的第四环
-
-    证券上市/退市日期这种表, 一天之内不会变, 但每次 update-panel 都要用来
-    区分"新股"与"退市股"。不缓存的话每跑一次就白调一次 API。
-    """
+    """小表缓存（.cache/<name>.parquet），超过 max_age_days 才重新加载。"""
 
     def __init__(self, cache_dir: str = None):
         self.dir = Path(cache_dir or config.CACHE_DIR)
@@ -519,17 +462,14 @@ class LocalTable:
 
 class IndexStore:
     """
-    基准指数本地存储 —— 本地优先的第二环
+    指数收盘价的本地存储：每个指数一个 parquet + 一个 .meta.json。
 
-    每个指数一个 parquet + 一个 .meta.json。请求区间被本地覆盖时完全不碰
-    远端。缺口分头尾两段分别处理:
+    请求区间本地已覆盖就不联网；有缺口时只补缺口：
+        尾部缺口  正常的增量更新
+        头部缺口  多半是账号历史权限不足。拉不到就把最早可得日期记进
+                  meta 的 head_floor，以后不再重试，免得每次都浪费额度。
 
-      尾部缺口  正常增量更新, 每次几行。
-      头部缺口  多为账号历史年限权限不足。拉一次拿不到就把实际可得的
-                最早日期写进 meta.head_floor, 之后不再重试 —— 否则每跑
-                一次回测就白烧一次配额。
-
-    fresh_days: 本地末日期距请求末日期在这个天数内就算新鲜, 不去更新。
+    fresh_days: 本地最后一天距请求终点不超过这么多天，就算是最新的。
     """
 
     def __init__(self, store_dir: str = None, source=None,
@@ -540,7 +480,7 @@ class IndexStore:
         self.fresh_days = fresh_days
         self.allow_remote = allow_remote and not config.OFFLINE
 
-    # ---------- 落盘 ----------
+    # ---------- 读写 ----------
 
     def _path(self, code: str) -> Path:
         return self.dir / f"{code.replace('.', '_')}.parquet"
@@ -580,13 +520,14 @@ class IndexStore:
     # ---------- 取数 ----------
 
     def get(self, code: str, start: str, end: str) -> pd.Series:
+        """返回 [start, end] 的收盘价序列，必要时先补缺口。"""
         local = self._read(code)
         req_start = pd.Timestamp(start)
-        # 请求终点不可能超过今天; END 写成未来日期时不该因此永远判定"不新鲜"
-        req_end = min(pd.Timestamp(end), pd.Timestamp.today().normalize())
+        req_end = min(pd.Timestamp(end), pd.Timestamp.today().normalize())  # 终点不超过今天
         floor = self._meta(code).get('head_floor')
         floor = pd.Timestamp(floor) if floor else None
 
+        # 找出缺口
         gaps = []
         if local is None:
             gaps.append((req_start, req_end, 'full'))
@@ -598,8 +539,9 @@ class IndexStore:
             if hi < req_end - pd.Timedelta(days=self.fresh_days):
                 gaps.append((hi + pd.Timedelta(days=1), req_end, 'tail'))
 
+        # 补缺口
         if not gaps:
-            pass          # 本地已完整, 不必吭声
+            pass
         elif self.source is None or not self.allow_remote:
             if local is None:
                 raise ValueError(
@@ -634,11 +576,10 @@ class IndexStore:
         if local is None or not len(local):
             raise ValueError(f'{code} 最终没有任何数据')
 
-        # 起点晚于请求不再警告: Omen.compute 会把指数缺失的头部整段裁掉,
-        # 回测实际就是从有数据的第一天开始, 不存在"条件①失效"的区间。
         return local.loc[start:end]
 
     def list_stored(self) -> pd.DataFrame:
+        """列出本地已存的指数及其覆盖区间。"""
         rows = []
         for p in sorted(self.dir.glob('*.parquet')):
             df = pd.read_parquet(p)

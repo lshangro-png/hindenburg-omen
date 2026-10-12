@@ -1,13 +1,12 @@
 """
-兴登堡预兆 (Hindenburg Omen) —— A股复现, 命令行入口
+命令行入口：把数据层和回测核心串起来，并提供各个子命令。
 
-聚宽账号走环境变量 (见 .env.example), 不要写进代码:
-    export JQ_USER=...
-    export JQ_PASSWORD=...
+    python hindenburg.py update-panel   更新价格面板 + 状态表
+    python hindenburg.py run            回测并打印结果
+    python hindenburg.py viz            生成仪表盘
+    python hindenburg.py -h             查看全部子命令
 
-    python hindenburg.py update-panel
-    python hindenburg.py run
-    python hindenburg.py viz
+聚宽账号通过环境变量 JQ_USER / JQ_PASSWORD 提供，不要写进代码。
 """
 
 from __future__ import annotations
@@ -17,333 +16,33 @@ import json
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
 import config
-from config import Params, Strategy, STRATEGIES
+from config import Strategy, STRATEGIES
 from data import Panel, BreadthCache, IndexStore, LocalTable, new_high_low, mcclellan
+from backtest import (build_signals, build_clusters, evaluate, summarize,
+                      current_status, signal_day_levels)
 import jq_source
 
 
 # =====================================================================
-# 回测核心 —— 全部写成纯函数, 输入中间序列输出结果。
-# 这样同一套逻辑可以在 viz.py 生成的 JS 里逐行镜像, 参数实验室才能
-# 在浏览器里算出跟 Python 一致的结果。
-# =====================================================================
-
-def build_signals(df: pd.DataFrame, p: Params,
-                  index_full: Optional[pd.Series] = None) -> pd.DataFrame:
-    """
-    由中间序列 + 轻参数算出四条件与信号。df 需含 index_close/high_ratio/
-    low_ratio/new_high/new_low/mcclellan。
-
-    index_full: 带预热段的指数收盘序列(索引可早于 df.index)。
-    """
-    src = df['index_close'] if index_full is None else index_full
-    ma = src.rolling(p.ma_period).mean()
-    if p.trend_mode == 'ma_rising':
-        # 美股原始定义: 均线本身的斜率, MA(t) > MA(t - ma_lookback)
-        cond1 = ma > ma.shift(p.ma_lookback)
-    elif p.trend_mode == 'above_ma':
-        # 浙商 A股适配版口径: 价格相对均线的位置, Close(t) > MA(t)
-        cond1 = src > ma
-    else:
-        raise ValueError(f'trend_mode 只能是 ma_rising 或 above_ma, 收到 {p.trend_mode!r}')
-    cond1 = cond1.reindex(df.index).astype('boolean').fillna(False).astype(bool)
-    out = df.copy()
-    out['cond1'] = cond1
-    out['cond2'] = (df['high_ratio'] >= p.threshold) & (df['low_ratio'] >= p.threshold)
-    out['cond3'] = df['new_high'] <= df['new_low'] * p.hl_ratio
-    out['cond4'] = df['mcclellan'] < 0
-    out['signal'] = out.cond1 & out.cond2 & out.cond3 & out.cond4
-    return out
-
-
-def build_clusters(df: pd.DataFrame, p: Params) -> pd.DataFrame:
-    """
-    信号聚类, 两种模式:
-
-      fixed  窗口从集群首日固定往后 cluster_window 个交易日。集群跨度上限
-             就是 cluster_window。
-      chain  链式延展: 每来一个新信号, 就把窗口从该信号重新往后延
-             cluster_window 天。只要信号间隔不超过窗口就一直串下去,
-             集群跨度可以远大于 cluster_window。
-    """
-    dates = list(df.index[df.signal])
-    if not dates:
-        return pd.DataFrame()
-    pos = {d: i for i, d in enumerate(df.index)}
-    out = []
-
-    if p.cluster_mode == 'chain':
-        group = [dates[0]]
-        for prev, cur in zip(dates, dates[1:]):
-            if pos[cur] - pos[prev] <= p.cluster_window:
-                group.append(cur)
-            else:
-                out.append(group)
-                group = [cur]
-        out.append(group)
-    elif p.cluster_mode == 'fixed':
-        used = set()
-        for d in dates:
-            if d in used:
-                continue
-            end_d = df.index[min(pos[d] + p.cluster_window, len(df) - 1)]
-            members = [x for x in dates if d <= x <= end_d and x not in used]
-            used.update(members)
-            out.append(members)
-    else:
-        raise ValueError(f'cluster_mode 只能是 fixed 或 chain, 收到 {p.cluster_mode!r}')
-
-    return pd.DataFrame([
-        {'cluster_id': i + 1, 'start_date': g[0], 'end_date': g[-1],
-         # 确认日 = 第 cluster_min 个信号出现的那天。集群"是不是有效集群"要等到
-         # 这天才知道, 所以这天才是实盘里能采取行动的最早时点。单点集群没有
-         # 确认日 (它永远没升级)。
-         'confirm_date': g[p.cluster_min - 1] if len(g) >= p.cluster_min else pd.NaT,
-         'signal_count': len(g),
-         'type': '有效集群' if len(g) >= p.cluster_min else '单点'}
-        for i, g in enumerate(out)])
-
-
-def grade(dd, cuts) -> str:
-    if dd is None or pd.isna(dd):
-        return '近期信号'   # 研报用词: 距最新数据不足观察窗口, 等级待定
-    big, mid, small = cuts
-    return ('较大回撤' if dd <= big else '中型回调' if dd <= mid
-            else '小幅回调' if dd <= small else '无显著回撤')
-
-
-def forward_drawdown(close: pd.Series, s: int, w: int, mode: str) -> float:
-    """
-    从位置 s 起, 未来 w 天(含)的回撤。被 evaluate/baseline_rates/signal_day_levels
-    共用, 三处口径必须完全一致, 所以抽成一个函数, 不要各自实现一份。
-
-      peak_trough  窗口内峰谷最大回撤(允许先涨到高点再从高点起算, 默认)
-      from_signal  相对起点收盘价的最低点跌幅
-    """
-    n = len(close)
-    if s + w >= n:
-        return np.nan
-    seg = close.iloc[s:s + w + 1]
-    if mode == 'peak_trough':
-        return float((seg / seg.cummax() - 1).min())
-    return float(seg.min() / close.iloc[s] - 1)
-
-
-def evaluate(df: pd.DataFrame, cl: pd.DataFrame, p: Params) -> pd.DataFrame:
-    """
-    两个正交的口径开关:
-
-    dd_mode   回撤怎么算
-        peak_trough  窗口内峰谷最大回撤(默认, 研报口径)
-        from_signal  相对锚点日收盘价的最低点跌幅
-
-    dd_anchor 从哪天起算
-        confirm  集群确认日, 即第 cluster_min 个信号出现那天(默认)
-        first    集群首日(研报口径)
-
-    单点集群没有确认日, 无论 dd_anchor 取什么都退回首日 —— 它们本来也不进统计。
-    """
-    if cl.empty:
-        return cl
-    close = df['index_close']
-    pos = {d: i for i, d in enumerate(df.index)}
-
-    def anchor_of(r) -> pd.Timestamp:
-        if p.dd_anchor == 'first':
-            return r.start_date
-        if p.dd_anchor != 'confirm':
-            raise ValueError(f'dd_anchor 只能是 confirm 或 first, 收到 {p.dd_anchor!r}')
-        return r.start_date if pd.isna(r.confirm_date) else r.confirm_date
-
-    anchors = [anchor_of(r) for _, r in cl.iterrows()]
-    cl = cl.copy()
-    cl['anchor_date'] = anchors
-    cols = {f'dd_{w}d': [forward_drawdown(close, pos[a], w, p.dd_mode) for a in anchors]
-            for w in p.dd_windows}
-    cl = pd.concat([cl, pd.DataFrame(cols, index=cl.index)], axis=1)
-    cl['level'] = cl[f'dd_{p.grade_window}d'].map(lambda d: grade(d, p.grade_cuts))
-    return cl
-
-
-def baseline_rates(df: pd.DataFrame, p: Params, mask: Optional[pd.Series] = None) -> dict:
-    """
-    无条件对照组: 把样本里每一天都当作信号日, 算同样口径的回撤分布。
-
-    mask: 限定抽样日集合。传 cond1 就得到"只在趋势向上时随机挑一天"的基准,
-    用来剥离趋势过滤本身的贡献, 看条件②③④ 还剩多少增量。
-    """
-    close = df['index_close']
-    n = len(close)
-    idx = np.arange(n) if mask is None else np.flatnonzero(mask.values)
-    out = {}
-    for w in p.dd_windows:
-        vals = [forward_drawdown(close, s, w, p.dd_mode) for s in idx]
-        vals = [v for v in vals if not pd.isna(v)]
-        if not vals:
-            continue
-        a = np.array(vals)
-        big, mid, small = p.grade_cuts
-        out[w] = {'n': int(a.size), 'median': float(np.median(a)),
-                  'p_small': float((a <= small).mean()),
-                  'p_mid': float((a <= mid).mean()),
-                  'p_big': float((a <= big).mean())}
-    return out
-
-
-def signal_day_levels(df: pd.DataFrame, cl: pd.DataFrame, p: Params) -> list[dict]:
-    """
-    给走势图用的逐日信号标注 —— 不是集群统计, 是可视化用的"这一天单独往后
-    看 grade_window 天回撤多少, 归到哪个等级"。
-    """
-    close = df['index_close']
-    sig_idx = np.flatnonzero(df['signal'].values)
-    ranges = []
-    if not cl.empty:
-        valid = cl[cl.type == '有效集群']
-        pos = {d: i for i, d in enumerate(df.index)}
-        ranges = [(pos[r.start_date], pos[r.end_date], int(r.cluster_id))
-                  for r in valid.itertuples() if r.start_date in pos and r.end_date in pos]
-
-    def cluster_of(i: int):
-        for lo, hi, cid in ranges:
-            if lo <= i <= hi:
-                return cid
-        return None
-
-    out = []
-    for i in sig_idx:
-        dd = forward_drawdown(close, i, p.grade_window, p.dd_mode)
-        out.append({'date': str(df.index[i].date()), 'index': int(i),
-                    'level': grade(dd, p.grade_cuts), 'cluster_id': cluster_of(i)})
-    return out
-
-
-def current_status(df: pd.DataFrame, cl: pd.DataFrame, p: Params) -> dict:
-    """
-    "此刻"的状态快照
-
-    recent_signal_count: 不要求这些信号属于同一个集群, 单纯统计原始频率。
-    active_cluster: 如果最近一个集群的 end_date 落在这个窗口内, 视为"仍新鲜",
-                    附带它的确认状态(是单点还是已升级为有效集群)。
-    """
-    n = len(df)
-    out = {'as_of': str(df.index[-1].date()) if n else None,
-          'window': p.cluster_window,
-          'last_signal_date': None, 'recent_signal_count': 0,
-          'active_cluster': None}
-    if not n:
-        return out
-
-    sig_idx = np.flatnonzero(df['signal'].values)
-    if len(sig_idx):
-        out['last_signal_date'] = str(df.index[sig_idx[-1]].date())
-        cutoff = n - 1 - p.cluster_window
-        out['recent_signal_count'] = int((sig_idx > cutoff).sum())
-
-    if not cl.empty:
-        window_start = df.index[max(0, n - 1 - p.cluster_window)]
-        fresh = cl[cl['end_date'] >= window_start]
-        if len(fresh):
-            r = fresh.sort_values('end_date').iloc[-1]
-            out['active_cluster'] = {
-                'id': int(r.cluster_id), 'type': r.type,
-                'start': str(r.start_date.date()), 'end': str(r.end_date.date()),
-                'count': int(r.signal_count),
-                'confirm_date': (None if pd.isna(r.confirm_date)
-                                 else str(r.confirm_date.date())),
-            }
-    return out
-
-
-def summarize(df: pd.DataFrame, cl: pd.DataFrame, p: Params) -> dict:
-    """
-    研报口径的命中率 + 两组无条件对照。
-    """
-    valid = cl[cl.type == '有效集群'] if not cl.empty else cl
-    gradable = valid[valid.level != '近期信号'] if not valid.empty else valid
-    col = f'dd_{p.grade_window}d'
-    big, mid = p.grade_cuts[0], p.grade_cuts[1]
-    hit_mid = int((gradable[col] <= mid).sum()) if len(gradable) else 0
-    hit_big = int((gradable[col] <= big).sum()) if len(gradable) else 0
-    hit_rate = hit_mid / len(gradable) if len(gradable) else None
-    hit_rate_big = hit_big / len(gradable) if len(gradable) else None
-
-    base_all = baseline_rates(df, p)
-    base_up = baseline_rates(df, p, mask=df['cond1'])
-    gw = p.grade_window
-
-    def excess_of(rate, key):
-        if rate is None or gw not in base_all:
-            return None
-        return {'vs_all': rate - base_all[gw][key],
-                'vs_uptrend': (rate - base_up[gw][key] if gw in base_up else None)}
-
-    excess = excess_of(hit_rate, 'p_mid')
-    excess_big = excess_of(hit_rate_big, 'p_big')
-
-    # 每个窗口(周/月/季/年)各自的命中率与超额 —— 而不是只看 grade_window。
-    # 用该窗口自己 notna 的集群数做分母, 不是套用 252 日口径的 gradable:
-    # 一个刚触发的近期集群可能 5 日回撤已经有数, 但 252 日还没观察满。
-    window_hits = {}
-    for w in p.dd_windows:
-        cw = f'dd_{w}d'
-        sub = valid[valid[cw].notna()] if not valid.empty else valid
-        nw = len(sub)
-        if nw == 0:
-            continue
-        hm = int((sub[cw] <= mid).sum())
-        hb = int((sub[cw] <= big).sum())
-        rm, rb = hm / nw, hb / nw
-        ba = base_all.get(w)
-        window_hits[w] = {
-            'n': nw, 'hit_mid': hm, 'hit_big': hb,
-            'rate_mid': rm, 'rate_big': rb,
-            'excess_mid': (rm - ba['p_mid']) if ba else None,
-            'excess_big': (rb - ba['p_big']) if ba else None,
-        }
-
-    cluster_box = {}
-    for w in p.dd_windows:
-        ss = gradable[f'dd_{w}d'].dropna() if len(gradable) else pd.Series(dtype=float)
-        if len(ss):
-            cluster_box[w] = {'n': int(len(ss)), 'median': float(ss.median()),
-                              'q1': float(ss.quantile(0.25)),
-                              'q3': float(ss.quantile(0.75)),
-                              'min': float(ss.min()), 'max': float(ss.max()),
-                              'worst': float(ss.min()), 'best': float(ss.max())}
-
-    status = current_status(df, cl, p)
-
-    return dict(
-        n_days=int(len(df)), signal_days=int(df.signal.sum()),
-        cond_rate={f'cond{i}': float(df[f'cond{i}'].mean()) for i in range(1, 5)},
-        n_clusters_total=int(len(cl)), n_clusters_valid=int(len(valid)),
-        n_gradable=int(len(gradable)),
-        hit_mid=hit_mid, hit_big=hit_big, hit_rate=hit_rate, hit_rate_big=hit_rate_big,
-        level_counts=(valid['level'].value_counts().to_dict() if len(valid) else {}),
-        cluster_box=cluster_box, window_hits=window_hits,
-        baseline_all=base_all, baseline_uptrend=base_up,
-        excess=excess, excess_big=excess_big, status=status,
-    )
-
-
-# =====================================================================
-# 编排
+# 单个策略的回测流程
 # =====================================================================
 
 class Omen:
+    """
+    一个策略的完整回测：compute() 算中间序列和信号 → run() 聚类并评估 → report() 打印。
+    """
     def __init__(self, strat: Strategy, panel: Panel, store: IndexStore,
                  cache: Optional[BreadthCache] = None):
         self.s, self.panel, self.store, self.cache = strat, panel, store, cache
         self.stats: Optional[pd.DataFrame] = None
-        self.index_full: Optional[pd.Series] = None   # 带预热段的指数, 供条件①用
+        self.index_full: Optional[pd.Series] = None   # 含预热段的指数收盘价（条件①用）
         self.index_source = strat.benchmark
 
     def compute(self, start: str, end: str) -> pd.DataFrame:
+        """宽度指标 + 基准指数 → 四条件与信号，结果存到 self.stats。"""
         s, p = self.s, self.s.params
         print(f'\n[{s.name}] 计算宽度指标...')
         kw = dict(ema_short=p.ema_short, ema_long=p.ema_long, warmup=p.warmup,
@@ -375,7 +74,7 @@ class Omen:
             self.index_full = df['index_close']
             self.index_source = '等权代理'
 
-        # 各策略的实际起点因此由"配置的 start" 和 "指数真实起点" 中较晚的那个决定。
+        # 实际起点 = max(配置的 start, 指数有数据的第一天)
         first = df['index_close'].first_valid_index()
         if first is None:
             raise ValueError(f'{s.benchmark} 在 {start}~{end} 内没有任何指数数据')
@@ -387,6 +86,7 @@ class Omen:
         return df
 
     def run(self) -> pd.DataFrame:
+        """聚类并评估，返回集群表。"""
         cl = build_clusters(self.stats, self.s.params)
         if not cl.empty:
             nv = (cl.type == '有效集群').sum()
@@ -396,6 +96,7 @@ class Omen:
         return evaluate(self.stats, cl, self.s.params)
 
     def report(self, cl: pd.DataFrame):
+        """在终端打印当前状态、集群列表、命中率与基准率。"""
         s, p = self.s, self.s.params
         print(f'\n{"="*74}\n  {s.name} 回测结果  (趋势基准: {self.index_source})\n{"="*74}')
 
@@ -443,10 +144,12 @@ class Omen:
                       f'出现该级别回撤, 命中率无区分度。')
 
 
+# =====================================================================
+# 公用小工具
+# =====================================================================
+
 def _end_date(panel: Panel) -> str:
-    """
-    回测终点。
-    """
+    """回测终点：HO_END，否则为面板最后一天；联网时顺便提醒面板是否落后。"""
     if config.END:
         return config.END
     local_end = panel.last_date
@@ -460,7 +163,7 @@ def _end_date(panel: Panel) -> str:
                     print(f'⚠ 本地面板到 {local_end:%Y-%m-%d}, 市场已到 {real:%Y-%m-%d} '
                           f'(约 {behind} 个交易日未更新), 先跑 `python hindenburg.py update-panel`')
     except Exception:
-        pass          # 日历核对只是提醒, 失败不该影响回测
+        pass          # 只是提醒，失败不影响回测
     return local_end.strftime('%Y-%m-%d')
 
 
@@ -470,6 +173,7 @@ def _make_store(allow_remote: bool = True) -> IndexStore:
 
 
 def _prepare(key: str, store=None, cache=None):
+    """按策略键建好 Omen 并完成 compute()。"""
     s = STRATEGIES[key]
     panel = Panel(state_rule=s.state_rule,
                   exclude_boards=s.params.exclude_boards,
@@ -486,7 +190,7 @@ def _prepare(key: str, store=None, cache=None):
 # =====================================================================
 
 def _index_pre(omen: Omen, df: pd.DataFrame) -> dict:
-    """回测起点之前的指数收盘, 给 backtest.js 算条件① 的均线用。"""
+    """回测起点之前的指数收盘价（供 backtest.js 计算条件①的均线）。"""
     full = omen.index_full
     if full is None:
         return {'dates': [], 'index_close': []}
@@ -497,9 +201,9 @@ def _index_pre(omen: Omen, df: pd.DataFrame) -> dict:
 
 def export_payload(omen: Omen, cl: pd.DataFrame) -> dict:
     """
-    导出可视化用的数据。刻意包含 index_close/high_ratio/low_ratio/new_high/
-    new_low/mcclellan 这些"中间序列"——参数实验室靠它们在浏览器里重算轻参数,
-    没有它们就只能看死结果。
+    导出给仪表盘 / 参数实验室的 JSON。
+
+    除了结果，还带上中间序列（series），参数实验室靠它们在浏览器里重算轻参数。
     """
     df, p = omen.stats, omen.s.params
     m = summarize(df, cl, p)
@@ -524,10 +228,9 @@ def export_payload(omen: Omen, cl: pd.DataFrame) -> dict:
         'index_source': omen.index_source,
         'state_rule': omen.s.state_rule,
         'params': {**p.light(), **p.heavy()},
-        # 只导出 heavy_keys: 参数实验室用它把重参数列成"只读"区。
+        # 参数实验室据此把重参数显示为只读
         'heavy_keys': sorted(config.HEAVY_KEYS),
         'meta': {'start': str(df.index[0].date()), 'end': str(df.index[-1].date()), **m},
-        # 逐日信号标注, 供走势图用 —— 每个信号日一个点, 不只是集群
         'signal_days': signal_day_levels(df, cl, p),
         'index_pre': _index_pre(omen, df),
         'series': {
@@ -559,6 +262,7 @@ def export_payload(omen: Omen, cl: pd.DataFrame) -> dict:
 # =====================================================================
 
 def cmd_run(strategy: Optional[str]):
+    """回测并打印结果，集群表写到 OUT_DIR/clusters_<策略>.csv。"""
     keys = [strategy] if strategy else list(STRATEGIES)
     store, cache = _make_store(), BreadthCache()
     failed = []
@@ -582,6 +286,7 @@ def cmd_run(strategy: Optional[str]):
 
 
 def cmd_export(strategy: Optional[str], out_dir: str):
+    """每个策略导出一份 export_<策略>.json；失败的策略会删掉旧文件，避免混淆。"""
     keys = [strategy] if strategy else list(STRATEGIES)
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     store, cache = _make_store(), BreadthCache()
@@ -608,7 +313,7 @@ def cmd_export(strategy: Optional[str], out_dir: str):
 
 
 def cmd_viz(out_dir: str, reuse: bool):
-    """生成 HTML。默认先跑 export 拿最新数据, --reuse 则直接用已有 JSON。"""
+    """生成 dashboard.html；默认先重新 export，--reuse 则直接用已有 JSON。"""
     import viz
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -628,9 +333,9 @@ def cmd_viz(out_dir: str, reuse: bool):
 
 def cmd_update(reset_head: Optional[str] = None):
     """
-    更新各策略基准指数的收盘序列。
+    更新各策略基准指数的收盘价。
 
-    reset_head: 清除指定指数(或 'all')的 head_floor 标记。
+    reset_head: 清除该指数（或 'all'）的 head_floor 记录，重新尝试拉取更早的历史。
     """
     panel = Panel()
     end = _end_date(panel)
@@ -662,9 +367,7 @@ def cmd_update(reset_head: Optional[str] = None):
 
 
 def cmd_update_panel(end: Optional[str], dry_run: bool):
-    """
-    价格面板 + 状态表一起更新。
-    """
+    """价格面板和状态表一起增量更新（两者必须同步，否则尾部交易日会被截掉）。"""
     if config.OFFLINE:
         raise SystemExit('HO_OFFLINE=1 时不联网, 无法更新')
     panel = Panel()
@@ -689,7 +392,7 @@ def cmd_update_panel(end: Optional[str], dry_run: bool):
 
 
 def cmd_fetch_constituents(index_code: str, start: Optional[str], end: Optional[str]):
-    """从聚宽拉指数成分股。本地缺哪个指数的名单就拉哪个。"""
+    """从聚宽拉取指数成分股。"""
     if config.OFFLINE:
         raise SystemExit('HO_OFFLINE=1 时不联网')
     s = next((st for st in STRATEGIES.values() if st.universe_index == index_code), None)
@@ -715,6 +418,7 @@ def cmd_clear_cache():
 
 
 def cmd_inspect():
+    """打印状态表各字段的取值分布。"""
     p = Panel().find('stock_state.pkl')
     if p is None:
         raise SystemExit(f'{config.DATA_DIR} 下找不到 stock_state.pkl')
@@ -736,9 +440,7 @@ def cmd_inspect():
 
 
 def cmd_inspect_day(date: str, strategy: str, days: int):
-    """
-    逐日打印四条件的原始值, 诊断"某天为什么没触发/触发了"。
-    """
+    """打印某天前后几天四个条件的原始值，用来诊断为什么触发 / 没触发。"""
     omen = _prepare(strategy)
     df = omen.stats
     p = omen.s.params
@@ -784,7 +486,7 @@ def cmd_inspect_day(date: str, strategy: str, days: int):
 
 
 def cmd_compare():
-    """对比可交易域规则。条件①统一用真实基准指数, 差异只来自可交易域。"""
+    """用中证全指对比三种可交易域规则（不剔 ST / 剔 ST / 按 trade_status）下的信号差异。"""
     panel0 = Panel()
     if panel0.find('stock_state.pkl') is None:
         print('⚠ 无 stock_state.pkl, 三条规则退化为同一条(价格推断), 对比无意义')
@@ -833,6 +535,10 @@ def cmd_compare():
               f"仅基准 {len(base['dates'] - r['dates']):>3} | "
               f"仅本规则 {len(r['dates'] - base['dates']):>3}")
 
+
+# =====================================================================
+# 命令行
+# =====================================================================
 
 def main():
     ap = argparse.ArgumentParser(description='兴登堡预兆 A股复现')
