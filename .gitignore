@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# 本地数据 (体积大 + 数据商授权, 不入库)
+data/*
+!data/README.md
+*.pkl
+*.pkl.bak
+*.parquet
+*.db
+
+# 缓存与产出
+.cache/
+index_store/
+output/*
+!output/.gitkeep
+
+# 研报 PDF 版权归原作者, 不入库
+*.pdf
+
+# 系统/编辑器
+.DS_Store
+.vscode/
+.idea/

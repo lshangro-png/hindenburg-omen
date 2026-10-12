@@ -1,0 +1,4 @@
+numpy>=1.24
+pandas>=2.0
+pyarrow>=12      # IndexStore / LocalTable 读写 parquet
+jqdatasdk        # 可选: 聚宽数据源, 纯本地模式 (HO_OFFLINE=1) 不需要
