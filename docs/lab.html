@@ -393,9 +393,9 @@ window.I18N = (function () {
       sc_total: '集群总数', sc_total_foot: (n) => `含 ${n} 个近期信号`,
       sc_mid: '中型以上回撤命中', sc_big: '较大回撤命中', sc_win: (gw, c) => `${gw} 日 ≤ ${c}%`,
       sc_rate: '中型回撤命中率', sc_rate_foot: (n) => `基于 ${n} 个可评估集群`,
-      summary_note: (n) => `集群信号为市场系统性调整的<b>必要非充分条件</b>（触发 ≠ 必跌，但下跌概率抬升），` +
-        `触发时建议提升防御仓位而非直接卖出。存在"假警报"（如流动性宽松期），需结合宏观环境综合判断。` +
-        `当前可评估集群 ${n} 个，样本量有限，结论不宜过度外推。`,
+      summary_note: (n, hit, base) => `<b>命中率要和基准率对照着看。</b>当前可评估集群 ${n} 个，中型回撤命中率 ${hit}；` +
+        `而随便挑一天，未来一年出现同等回撤的概率（基准率）就有 ${base}。` +
+        `在 A 股上，这个指标没有表现出稳定的预警能力，加上样本量很小，不宜据此做交易决策。`,
       trend_title: (src) => `${src} 走势与信号标注`,
       trend_sub: '可滚轮缩放/拖拽 · 三角=有效集群 圆点=单点信号',
       c1_title: '条件① 趋势向上', c1_sub: (src, n) => `${src} vs ${n}日均线`,
@@ -506,10 +506,10 @@ window.I18N = (function () {
       sc_total: 'Valid clusters', sc_total_foot: (n) => `incl. ${n} pending`,
       sc_mid: 'Moderate+ drawdown hits', sc_big: 'Major drawdown hits', sc_win: (gw, c) => `${gw}d ≤ ${c}%`,
       sc_rate: 'Moderate hit rate', sc_rate_foot: (n) => `Based on ${pl(n, 'gradable cluster')}`,
-      summary_note: (n) => `A cluster signal is a <b>necessary but not sufficient condition</b> for a systematic market correction
-  (a signal ≠ a certain decline, but the odds rise); when it fires, consider a more defensive position rather than selling outright.
-  False alarms happen (e.g. in periods of easy liquidity), so read it alongside the macro backdrop.
-  There are currently ${pl(n, 'gradable cluster')}; with a sample this small, conclusions should not be over-generalised.`,
+      summary_note: (n, hit, base) => `<b>Read the hit rate against the base rate.</b> There are currently ${pl(n, 'gradable cluster')},
+  with a moderate-drawdown hit rate of ${hit}; yet for any randomly chosen day, the chance of an equally large drawdown within a year
+  (the base rate) is already ${base}. On A-shares this indicator has shown no consistent predictive power, and with a sample this small
+  it should not be used to make trading decisions.`,
       trend_title: (src) => `${src} with signals`,
       trend_sub: 'Scroll to zoom / drag · triangle = valid cluster, dot = single signal',
       c1_title: '① Uptrend', c1_sub: (src, n) => `${src} vs ${n}-day MA`,

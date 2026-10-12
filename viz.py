@@ -338,7 +338,9 @@ DASHBOARD_JS = r"""
     document.getElementById('pill-row').innerHTML = order.filter(l => m.level_counts[l])
       .map(l => `<div class="pill"><span class="dot" style="background:${LC[l]}"></span>${v(l)} <b>${m.level_counts[l]}</b></div>`).join('');
 
-    document.getElementById('summary-note').innerHTML = t('summary_note', m.n_gradable);
+    const base = (m.baseline_all || {})[gw];
+    document.getElementById('summary-note').innerHTML =
+      t('summary_note', m.n_gradable, pct(m.hit_rate,0), pct(base ? base.p_mid : null, 0));
 
     // 走势与逐日信号标注
     document.getElementById('trend-title').textContent = t('trend_title', src);
