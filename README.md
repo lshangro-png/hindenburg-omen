@@ -8,8 +8,8 @@ Reference: Zheshang Securities, *How effective is the "Hindenburg Omen" at avoid
 — Chip Microstructure Series (IX)* (2026-06-26, in Chinese).
 
 - 📓 **Start here**: [walkthrough.ipynb](walkthrough.ipynb) — the full research process and conclusions, with charts ([中文版](walkthrough_zh.ipynb))
-- 📊 **Live dashboard**: https://lshangro-png.github.io/hindenburg-omen/
-- 🎛 **Parameter lab**: https://lshangro-png.github.io/hindenburg-omen/lab.html (drag sliders, results recompute instantly)
+- 📊 **Live dashboard**: https://lshangro-png.github.io/hindenburg-omen/dashboard_en.html
+- 🎛 **Parameter lab**: https://lshangro-png.github.io/hindenburg-omen/lab_en.html (drag sliders, results recompute instantly)
 
 Data through 2026-08-07.
 
@@ -61,12 +61,13 @@ while conditions ②③④ use the matching stock universe (whole market / Shang
 ├── config.py          All parameters and strategy definitions (light vs. heavy parameters)
 ├── data.py            Data layer: price panel, tradable universe, new highs/lows, McClellan, local caches
 ├── jq_source.py       JoinQuant data source (the only remote source), with quota guards and incremental updates
-├── viz.py             Builds the backtest dashboard, dashboard.html
-├── lab.py             Builds the parameter lab, lab.html (recomputes light parameters in the browser)
+├── viz.py             Builds the backtest dashboard (dashboard.html in Chinese, dashboard_en.html in English)
+├── lab.py             Builds the parameter lab (lab.html / lab_en.html); recomputes light parameters in the browser
 ├── export_unadj.py    Experimental comparison: unadjusted prices + unfiltered universe (lab only)
 ├── assets/
 │   ├── backtest.js    JS mirror of backtest.py, function by function
 │   ├── common.js      Front-end helpers shared by the dashboard and the lab
+│   ├── i18n.js        All page text in Chinese and English
 │   ├── chart_engine.js  Lightweight SVG chart engine
 │   └── report.css
 ├── docs/              GitHub Pages: snapshots of the dashboard and the lab
@@ -100,7 +101,7 @@ export JQ_PASSWORD=your_password
 ```bash
 python hindenburg.py update-panel    # bring the price panel and state table up to the latest trading day
 python hindenburg.py run             # run the backtest, print results, write output/clusters_*.csv
-python hindenburg.py viz             # build output/dashboard.html
+python hindenburg.py viz             # build output/dashboard.html and dashboard_en.html
 ```
 
 No need for `clear-cache`: the cache key includes the data files' modification times, so the cache
@@ -131,7 +132,7 @@ python hindenburg.py viz --reuse     # reuse the last exported JSON
 
 ```bash
 python hindenburg.py export
-python lab.py                        # builds output/lab.html
+python lab.py                        # builds output/lab.html and lab_en.html
 ```
 
 **Experimental "unadjusted prices + no filtering" comparison** (shown only in the parameter lab, not in

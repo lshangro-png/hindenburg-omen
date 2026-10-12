@@ -54,12 +54,13 @@ A 股 252 日窗口下这个数高达 85%~100%，所以除了「命中率 92%」
 ├── config.py          全部参数与策略定义（轻参数 / 重参数分层）
 ├── data.py            数据层：价格面板、可交易域、新高新低、McClellan、各级本地缓存
 ├── jq_source.py       聚宽数据源（唯一的远端），含额度保护与面板增量更新
-├── viz.py             生成回测仪表盘 dashboard.html
-├── lab.py             参数实验室 lab.html（浏览器里拖滑块实时重算轻参数）
+├── viz.py             生成回测仪表盘（中文 dashboard.html / 英文 dashboard_en.html）
+├── lab.py             参数实验室（lab.html / lab_en.html），浏览器里拖滑块实时重算轻参数
 ├── export_unadj.py    实验性对照口径：不复权价 + 不过滤可交易域（仅进 lab）
 ├── assets/
 │   ├── backtest.js    回测核心的 JS 镜像，与 backtest.py 逐函数对应
 │   ├── common.js      仪表盘和参数实验室共用的前端小工具
+│   ├── i18n.js        页面上所有文字的中英对照表
 │   ├── chart_engine.js  轻量 SVG 图表引擎
 │   └── report.css
 ├── docs/              GitHub Pages：仪表盘和参数实验室的快照
@@ -91,7 +92,7 @@ export JQ_PASSWORD=你的密码
 ```bash
 python hindenburg.py update-panel    # 价格面板 + 状态表更新到最新交易日
 python hindenburg.py run             # 跑回测，打印结果，写 output/clusters_*.csv
-python hindenburg.py viz             # 生成 output/dashboard.html
+python hindenburg.py viz             # 生成 output/dashboard.html 和 dashboard_en.html
 ```
 
 不需要 `clear-cache`，因为缓存键里带了数据文件的修改时间，数据一更新缓存就自动失效重算。
@@ -121,7 +122,7 @@ python hindenburg.py viz --reuse     # 直接用上次导出的 JSON
 
 ```bash
 python hindenburg.py export
-python lab.py                        # 生成 output/lab.html
+python lab.py                        # 生成 output/lab.html 和 lab_en.html
 ```
 
 **「不复权价 + 不过滤」实验性对照口径**（只在参数实验室里能看到，不进 dashboard；
