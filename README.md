@@ -188,3 +188,7 @@ python hindenburg.py update --reset-head 000985.CSI   # 强制重试拉取指数
 - `update-panel` 只给面板里**已有的**股票续数据，面板建好之后新上市的股票不会自动加列。
   它们上市满一年才会进可交易域，所以短期影响有限，但长期不重建面板会让股票池逐渐缺新股。
 - 本项目仅供研究，不构成投资建议。
+
+## License
+
+[MIT](LICENSE)
