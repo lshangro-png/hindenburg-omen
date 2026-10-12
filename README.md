@@ -3,6 +3,8 @@
 在 A 股上复现顶部预警指标「兴登堡预兆」，并用**基准率**检验它是否真的有信息量。
 参考：浙商证券《"兴登堡预兆"规避股指下跌的有效性如何？——筹码微观结构探秘系列（九）》（2026-06-26）。
 
+📊 **回测结果仪表盘**：[docs/dashboard.html](docs/dashboard.html)（数据截至 2026-08-07；下载后用浏览器打开，或开启 GitHub Pages 在线查看）
+
 ## 指标定义
 
 四个条件同一天全部满足才算触发一次信号：
@@ -40,6 +42,7 @@ A 股这个数接近 97%，所以除了「命中率 92%」这种数字，还会�
 │   ├── backtest.js    回测核心的 JS 镜像，与 hindenburg.py 逐函数对应
 │   ├── chart_engine.js  轻量 SVG 图表引擎
 │   └── report.css
+├── docs/dashboard.html  最近一次回测的仪表盘快照
 ├── data/              本地数据（不入库，格式见 data/README.md）
 └── output/            运行产出：clusters_*.csv / export_*.json / *.html（不入库）
 ```
