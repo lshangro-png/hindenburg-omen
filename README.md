@@ -7,6 +7,7 @@ tested against **base rates** to check whether it carries any real information.
 Reference: Zheshang Securities, *How effective is the "Hindenburg Omen" at avoiding index declines?
 — Chip Microstructure Series (IX)* (2026-06-26, in Chinese).
 
+- 📄 **Research report** (Chinese): [report/report_zh.md](report/report_zh.md) — full method, results and conclusions
 - 📓 **Start here**: [walkthrough.ipynb](walkthrough.ipynb) — the full research process and conclusions, with charts ([中文版](walkthrough_zh.ipynb))
 - 📊 **Live dashboard**: https://lshangro-png.github.io/hindenburg-omen/dashboard_en.html
 - 🎛 **Parameter lab**: https://lshangro-png.github.io/hindenburg-omen/lab_en.html (drag sliders, results recompute instantly)
@@ -70,6 +71,7 @@ while conditions ②③④ use the matching stock universe (whole market / Shang
 │   ├── i18n.js        All page text in Chinese and English
 │   ├── chart_engine.js  Lightweight SVG chart engine
 │   └── report.css
+├── report/            Research report (report_zh.md, in Chinese) and its figures
 ├── docs/              GitHub Pages: snapshots of the dashboard and the lab
 ├── data/              Local data (not committed; format in data/README.md)
 └── output/            Run outputs: clusters_*.csv / export_*.json / *.html (not committed)

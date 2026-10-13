@@ -5,6 +5,7 @@
 在 A 股上复现顶部预警指标「兴登堡预兆」，并用**基准率**检验它是否真的有信息量。
 参考：浙商证券《"兴登堡预兆"规避股指下跌的有效性如何？——筹码微观结构探秘系列（九）》（2026-06-26）。
 
+- 📄 **研究报告**：[report/report_zh.md](report/report_zh.md)，完整的方法、结果和结论
 - 📓 **从这里开始**：[walkthrough_zh.ipynb](walkthrough_zh.ipynb)，带图从头到尾走一遍研究过程和结论（[English](walkthrough.ipynb)）
 - 📊 **在线仪表盘**：https://lshangro-png.github.io/hindenburg-omen/
 - 🎛 **参数实验室**：https://lshangro-png.github.io/hindenburg-omen/lab.html （拖滑块实时重算）
@@ -63,6 +64,7 @@ A 股 252 日窗口下这个数高达 85%~100%，所以除了「命中率 92%」
 │   ├── i18n.js        页面上所有文字的中英对照表
 │   ├── chart_engine.js  轻量 SVG 图表引擎
 │   └── report.css
+├── report/            研究报告（report_zh.md）及配图
 ├── docs/              GitHub Pages：仪表盘和参数实验室的快照
 ├── data/              本地数据（不入库，格式见 data/README.md）
 └── output/            运行产出：clusters_*.csv / export_*.json / *.html（不入库）
