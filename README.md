@@ -24,6 +24,10 @@ On A-shares, the Hindenburg Omen **shows no consistent predictive power**:
   4–14 gradable clusters.
 - The 2015 market top produced no signal at all: the market flipped straight from broad rally to broad
   sell-off, so condition ② (many new highs *and* many new lows at the same time) never held on a single day.
+- **Crowding check** ([04_拥挤度.ipynb](04_拥挤度.ipynb)): when the Omen fires, turnover concentration is in its
+  historical top 20% 63% of the time (vs. 29% on a typical day), so the Omen is essentially a price-side picture of
+  crowded "herding" trades. Combining the two slightly improves the excess for ≥ 20% drawdowns, but the sample is too
+  small to rely on, and none of the three crowding measures times the market reliably on its own.
 
 ## The indicator
 
@@ -58,6 +62,7 @@ The project is three notebooks that pass data to each other through a **PostgreS
 02_回测.ipynb   Backtest: read DB → four conditions → clusters → drawdowns → base rates → results to DB,
                 with charts and the full write-up (2015 case study, five-index summary, diagnostics)
 03_展示.ipynb   Pages: read results from DB → build the dashboard and parameter lab into docs/
+04_拥挤度.ipynb  Crowding: turnover concentration, turnover heat, average correlation, tested against the Omen
 assets/         Front-end files the pages need (chart engine, JS mirror of the backtest, i18n text, CSS)
 docs/           GitHub Pages: dashboard and parameter lab, Chinese and English
 report/         Research report (Chinese) and its figures
@@ -70,6 +75,8 @@ report/         Research report (Chinese) and its figures
 | `breadth` | 02 | Market-breadth series per index (cache, rebuilt when parameters or data change) |
 | `daily` | 02 | Per index per day: close, MA, new highs/lows, McClellan, the four conditions, signal |
 | `clusters`, `hit_vs_base`, `summary`, `strategy_info`, `index_pre` | 02 | Clusters and drawdowns, hit rate vs. base rate, summary statistics, parameters |
+| `stock_amount` | 01 | Daily stock turnover (from a local tushare database) |
+| `crowding`, `crowding_test` | 04 | Crowding indicators and test results |
 
 Fields, coverage and example queries for every table are in [数据库说明.md](数据库说明.md) (Chinese). For Tableau, connect directly to the database and use `daily`, `clusters` and `hit_vs_base`.
 
@@ -95,7 +102,7 @@ Fields, coverage and example queries for every table are in [数据库说明.md]
    pip install -r requirements.txt
    ```
 
-3. Run the notebooks in order: `01_数据` → `02_回测` → `03_展示`.
+3. Run the notebooks in order: `01_数据` → `02_回测` → `03_展示`; for the crowding study, then `04_拥挤度`.
 
 The database address defaults to `postgresql+psycopg://localhost/hindenburg` (no password for a local
 connection); set `HO_DB_URL` to use another one.
