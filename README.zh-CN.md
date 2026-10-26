@@ -64,7 +64,7 @@ report/         研究报告及配图
 | `daily` | 02 | 每个指数每天的收盘价、均线、新高新低、McClellan、四个条件、是否信号日 |
 | `clusters`、`hit_vs_base`、`summary`、`strategy_info`、`index_pre` | 02 | 集群与回撤、命中率与基准率、汇总统计、参数 |
 
-用 Tableau 做图时直接连这个数据库，用 `daily`、`clusters`、`hit_vs_base` 三张表即可。
+每张表的字段、数据范围和常用查询见 [数据库说明.md](数据库说明.md)。用 Tableau 做图时直接连这个数据库，用 `daily`、`clusters`、`hit_vs_base` 三张表即可。
 
 ## 安装
 

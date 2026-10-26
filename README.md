@@ -71,7 +71,7 @@ report/         Research report (Chinese) and its figures
 | `daily` | 02 | Per index per day: close, MA, new highs/lows, McClellan, the four conditions, signal |
 | `clusters`, `hit_vs_base`, `summary`, `strategy_info`, `index_pre` | 02 | Clusters and drawdowns, hit rate vs. base rate, summary statistics, parameters |
 
-For Tableau, connect directly to the database and use `daily`, `clusters` and `hit_vs_base`.
+Fields, coverage and example queries for every table are in [数据库说明.md](数据库说明.md) (Chinese). For Tableau, connect directly to the database and use `daily`, `clusters` and `hit_vs_base`.
 
 ## Setup
 
