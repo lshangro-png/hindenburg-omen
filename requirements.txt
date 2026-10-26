@@ -1,6 +1,9 @@
 numpy>=1.24
-pandas>=2.0
-pyarrow>=12      # IndexStore / LocalTable 读写 parquet
-jqdatasdk        # 可选: 聚宽数据源, 纯本地模式 (HO_OFFLINE=1) 不需要
-matplotlib       # walkthrough.ipynb 画图
-jupyter          # 运行 walkthrough.ipynb
+pandas>=2.1
+sqlalchemy>=2.0
+psycopg[binary]>=3.1   # PostgreSQL 驱动
+matplotlib             # 02_回测 画图
+jupyter                # 运行 notebook
+jinja2                 # notebook 里的表格样式
+pyarrow>=12            # 01_数据 一次性导入旧版 parquet 文件
+jqdatasdk              # 可选: 聚宽数据源, 只在更新数据时需要

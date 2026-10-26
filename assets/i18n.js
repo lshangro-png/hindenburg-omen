@@ -91,18 +91,17 @@ window.I18N = (function () {
       hero_lab: '参数<em>实验室</em>',
       lab_intro: `拖动左侧滑块，四条件判定、集群划分、回撤评级会立刻重算——因为导出的数据里带着
   指数收盘、新高新低占比、家数、McClellan 值这些<b>中间序列</b>，四个条件都能由它们推出来。
-  计算逻辑与 <code>backtest.py</code> 逐函数对应（已验证结果完全一致）。`,
+  计算逻辑与 <code>02_回测.ipynb</code> 逐函数对应（已验证结果完全一致）。`,
       light_params: '轻参数', light_hint: '这些只依赖已算好的中间序列，改动毫秒级生效。',
       cluster_mode: '集群方式', opt_fixed: 'fixed · 窗口从首日固定', opt_chain: 'chain · 链式延展',
       dd_mode: '回撤口径', opt_peak: 'peak_trough · 窗口内峰谷', opt_from: 'from_signal · 锚点日起最低点',
       reset: '恢复默认',
       heavy_title: '重参数（改这些必须重跑 Python）',
       heavy_note: `这些参数决定了 McClellan 值、新高新低占比这些<b>输入序列本身</b>。
-      浏览器里没有全市场股票面板，算不出来。要改就在 <code>config.py</code> 里改，然后重跑
-      <code>python hindenburg.py clear-cache &amp;&amp; python hindenburg.py export</code>，
-      再 <code>python lab.py</code> 重新生成本页。`,
-      lab_foot1: `<b>如何用</b>：先在这里把轻参数调顺（免费、实时），定下来之后再去 <code>config.py</code>
-  改重参数并重跑。左上角"恢复默认"回到 config.py 里的设定值。`,
+      浏览器里没有全市场股票面板，算不出来。要改就在 <code>02_回测.ipynb</code> 开头的参数里改，
+      重新运行 <code>02_回测</code>，再运行 <code>03_展示</code> 重新生成本页。`,
+      lab_foot1: `<b>如何用</b>：先在这里把轻参数调顺（免费、实时），定下来之后再去 <code>02_回测.ipynb</code>
+  改参数并重跑。左上角"恢复默认"回到 02_回测 里的设定值。`,
       lab_foot2: `<b>注意</b>：调参极易过拟合。样本量本就很小，多试几组总能找到"看起来很准"的组合，
   但那多半是过拟合。`,
       sl_ma_period: '① 趋势均线周期', sl_ma_lookback: '① 均线比较滞后', sl_threshold: '② 新高/新低占比阈值',
@@ -116,7 +115,7 @@ window.I18N = (function () {
       lab_now: (n, hit, base, ex) => `<b>当前参数</b>：${n} 个可评估集群，中型回撤命中率 ${hit}，` +
         `同期基准率 ${base}，超额 ${ex}。` +
         `样本量本就很小，命中率和基准率的差多半是噪声，不要只盯着命中率数字调参——` +
-        `绿色/红色小字是相对 config.py 默认参数的变化。`,
+        `绿色/红色小字是相对 02_回测 默认参数的变化。`,
       no_index: '指数无数据',
       lab_trend_title: (src) => `${src} 走势与当前参数下的信号`, lab_trend_sub: '可滚轮缩放/拖拽',
       lab_c1: (n) => `条件① MA${n} 上升`, holds: (x) => `触发率 ${x}`,
@@ -205,7 +204,7 @@ window.I18N = (function () {
       hero_lab: 'Parameter <em>Lab</em>',
       lab_intro: `Drag the sliders on the left and the four conditions, clusters and drawdown grades recompute instantly.
   The exported data carries the <b>intermediate series</b> (index close, share of new highs/lows, counts, McClellan values),
-  from which all four conditions can be derived. The logic mirrors <code>backtest.py</code> function by function
+  from which all four conditions can be derived. The logic mirrors <code>02_回测.ipynb</code> function by function
   (results verified to match exactly).`,
       light_params: 'Light parameters', light_hint: 'These only use precomputed series, so changes take effect in milliseconds.',
       cluster_mode: 'Clustering', opt_fixed: 'fixed · window fixed from first signal', opt_chain: 'chain · extends with each signal',
@@ -213,11 +212,10 @@ window.I18N = (function () {
       reset: 'Reset to defaults',
       heavy_title: 'Heavy parameters (changing these requires re-running Python)',
       heavy_note: `These parameters determine the <b>input series themselves</b> (McClellan values, shares of new highs/lows).
-      The browser does not have the full stock panel, so it cannot compute them. To change them, edit <code>config.py</code>, run
-      <code>python hindenburg.py clear-cache &amp;&amp; python hindenburg.py export</code>,
-      then <code>python lab.py</code> to rebuild this page.`,
+      The browser does not have the full stock panel, so it cannot compute them. To change them, edit the parameters at the top of
+      <code>02_回测.ipynb</code>, re-run it, then run <code>03_展示.ipynb</code> to rebuild this page.`,
       lab_foot1: `<b>How to use</b>: tune the light parameters here first (free and instant); once settled, change heavy
-  parameters in <code>config.py</code> and re-run. "Reset to defaults" returns to the values in config.py.`,
+  parameters in <code>02_回测.ipynb</code> and re-run. "Reset to defaults" returns to the values set there.`,
       lab_foot2: `<b>Caution</b>: tuning overfits very easily. With samples this small, trying enough combinations will always
   turn up one that "looks accurate", but it is most likely overfitted.`,
       sl_ma_period: '① Trend MA period', sl_ma_lookback: '① MA comparison lag', sl_threshold: '② New high/low share threshold',
@@ -231,7 +229,7 @@ window.I18N = (function () {
       lab_now: (n, hit, base, ex) => `<b>Current parameters</b>: ${pl(n, 'gradable cluster')}, moderate hit rate ${hit}, ` +
         `base rate ${base}, excess ${ex}. ` +
         `The sample is small, so the gap between hit rate and base rate is mostly noise; don't tune just to push the hit rate up. ` +
-        `The small green/red numbers show the change relative to the defaults in config.py.`,
+        `The small green/red numbers show the change relative to the defaults in 02_回测.ipynb.`,
       no_index: 'No index data',
       lab_trend_title: (src) => `${src} with signals under the current parameters`, lab_trend_sub: 'Scroll to zoom / drag',
       lab_c1: (n) => `① MA${n} rising`, holds: (x) => `Holds ${x}`,

@@ -16,8 +16,8 @@ data/*
 # 缓存与产出
 .cache/
 index_store/
-output/*
-!output/.gitkeep
+output/
+.ipynb_checkpoints/
 
 # 研报 PDF 版权归原作者, 不入库
 *.pdf

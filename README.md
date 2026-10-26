@@ -8,9 +8,9 @@ Reference: Zheshang Securities, *How effective is the "Hindenburg Omen" at avoid
 — Chip Microstructure Series (IX)* (2026-06-26, in Chinese).
 
 - 📄 **Research report** (Chinese): [report/report_zh.md](report/report_zh.md) — full method, results and conclusions
-- 📓 **Start here**: [walkthrough.ipynb](walkthrough.ipynb) — the full research process and conclusions, with charts ([中文版](walkthrough_zh.ipynb))
 - 📊 **Live dashboard**: https://lshangro-png.github.io/hindenburg-omen/dashboard_en.html
 - 🎛 **Parameter lab**: https://lshangro-png.github.io/hindenburg-omen/lab_en.html (drag sliders, results recompute instantly)
+- 📓 **Code**: three Jupyter notebooks (in Chinese), see [Project layout](#project-layout)
 
 Data through 2026-08-07.
 
@@ -24,8 +24,6 @@ On A-shares, the Hindenburg Omen **shows no consistent predictive power**:
   4–14 gradable clusters.
 - The 2015 market top produced no signal at all: the market flipped straight from broad rally to broad
   sell-off, so condition ② (many new highs *and* many new lows at the same time) never held on a single day.
-
-See [walkthrough.ipynb](walkthrough.ipynb) for the full analysis.
 
 ## The indicator
 
@@ -53,132 +51,88 @@ while conditions ②③④ use the matching stock universe (whole market / Shang
 
 ## Project layout
 
+The project is three notebooks that pass data to each other through a **PostgreSQL database**:
+
 ```
-.
-├── walkthrough.ipynb  Research walkthrough: calls the modules below, from data to conclusions
-├── walkthrough_zh.ipynb  The same walkthrough in Chinese
-├── hindenburg.py      Command-line entry point (update / run / viz / inspect-day ...)
-├── backtest.py        Pure backtest functions: build_signals → build_clusters → evaluate → summarize
-├── config.py          All parameters and strategy definitions (light vs. heavy parameters)
-├── data.py            Data layer: price panel, tradable universe, new highs/lows, McClellan, local caches
-├── jq_source.py       JoinQuant data source (the only remote source), with quota guards and incremental updates
-├── viz.py             Builds the backtest dashboard (dashboard.html in Chinese, dashboard_en.html in English)
-├── lab.py             Builds the parameter lab (lab.html / lab_en.html); recomputes light parameters in the browser
-├── export_unadj.py    Experimental comparison: unadjusted prices + unfiltered universe (lab only)
-├── assets/
-│   ├── backtest.js    JS mirror of backtest.py, function by function
-│   ├── common.js      Front-end helpers shared by the dashboard and the lab
-│   ├── i18n.js        All page text in Chinese and English
-│   ├── chart_engine.js  Lightweight SVG chart engine
-│   └── report.css
-├── report/            Research report (report_zh.md, in Chinese) and its figures
-├── docs/              GitHub Pages: snapshots of the dashboard and the lab
-├── data/              Local data (not committed; format in data/README.md)
-└── output/            Run outputs: clusters_*.csv / export_*.json / *.html (not committed)
+01_数据.ipynb   Data: create tables → one-time import of legacy files → incremental JoinQuant updates
+02_回测.ipynb   Backtest: read DB → four conditions → clusters → drawdowns → base rates → results to DB,
+                with charts and the full write-up (2015 case study, five-index summary, diagnostics)
+03_展示.ipynb   Pages: read results from DB → build the dashboard and parameter lab into docs/
+assets/         Front-end files the pages need (chart engine, JS mirror of the backtest, i18n text, CSS)
+docs/           GitHub Pages: dashboard and parameter lab, Chinese and English
+report/         Research report (Chinese) and its figures
 ```
 
-Runs also create `.cache/` (breadth-indicator cache) and `index_store/` (index close prices as parquet);
-neither is committed.
+| Database table | Written by | Contents |
+|---|---|---|
+| `stock_close_adj`, `stock_close_unadj`, `stock_state` | 01 | Stock prices (adjusted / unadjusted) and daily trading status |
+| `index_close`, `index_meta`, `index_constituents` | 01 | Benchmark index closes and index constituents |
+| `breadth` | 02 | Market-breadth series per index (cache, rebuilt when parameters or data change) |
+| `daily` | 02 | Per index per day: close, MA, new highs/lows, McClellan, the four conditions, signal |
+| `clusters`, `hit_vs_base`, `summary`, `strategy_info`, `index_pre` | 02 | Clusters and drawdowns, hit rate vs. base rate, summary statistics, parameters |
 
-## Installation
+For Tableau, connect directly to the database and use `daily`, `clusters` and `hit_vs_base`.
 
-```bash
-pip install -r requirements.txt
-```
+## Setup
 
-See [data/README.md](data/README.md) for the expected data files.
+1. Install PostgreSQL and create the database (macOS with Homebrew):
 
-A JoinQuant account is optional; without one the project runs in local-only mode. Provide credentials
-**only through environment variables — never put them in code or in this README**:
+   ```bash
+   brew install postgresql@17
+   ```
+
+   ```bash
+   brew services start postgresql@17
+   ```
+
+   ```bash
+   /opt/homebrew/opt/postgresql@17/bin/createdb hindenburg
+   ```
+
+2. Install the Python packages:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Run the notebooks in order: `01_数据` → `02_回测` → `03_展示`.
+
+The database address defaults to `postgresql+psycopg://localhost/hindenburg` (no password for a local
+connection); set `HO_DB_URL` to use another one.
+
+A JoinQuant account is only needed for updating data. Provide it **only through environment variables —
+never put it in a notebook or in this README**:
 
 ```bash
 export JQ_USER=your_account
 export JQ_PASSWORD=your_password
 ```
 
+On first run, `01_数据` imports the legacy data files (`stock_price_adj_close.pkl`, `stock_state.pkl`,
+`index_constituents_*.pkl`, `index_store/*.parquet`) from the folder given by `HO_LEGACY_DIR` /
+`HO_LEGACY_INDEX_DIR`; their format is described in [data/README.md](data/README.md).
+
 ## Usage
 
-**Routine update (new data, unchanged parameters):**
-
-```bash
-python hindenburg.py update-panel    # bring the price panel and state table up to the latest trading day
-python hindenburg.py run             # run the backtest, print results, write output/clusters_*.csv
-python hindenburg.py viz             # build output/dashboard.html and dashboard_en.html
-```
-
-No need for `clear-cache`: the cache key includes the data files' modification times, so the cache
-invalidates itself whenever the data changes.
-
-**After changing parameters in `config.py`:**
-
-```bash
-python hindenburg.py clear-cache
-python hindenburg.py run
-python hindenburg.py viz
-```
-
-**Run a single index:**
-
-```bash
-python hindenburg.py run --strategy ashare
-# options: ashare (CSI All Share) / general (SSE Composite) / 300 / 500 / 1000
-```
-
-**Rebuild the page without re-running the backtest:**
-
-```bash
-python hindenburg.py viz --reuse     # reuse the last exported JSON
-```
-
-**Parameter lab** (drag sliders, see results without re-running):
-
-```bash
-python hindenburg.py export
-python lab.py                        # builds output/lab.html and lab_en.html
-```
-
-**Experimental "unadjusted prices + no filtering" comparison** (shown only in the parameter lab, not in
-the dashboard; this is not the project's official methodology, just a point of comparison):
-
-```bash
-python export_unadj.py data
-python lab.py
-```
-
-**Find out why a given day did or didn't signal:**
-
-```bash
-python hindenburg.py inspect-day 2015-06-29 --strategy ashare
-```
-
-This prints the raw values of all four conditions around that day, so you can see which one failed.
-
-**Other commands:**
-
-```bash
-python hindenburg.py quota           # remaining JoinQuant quota
-python hindenburg.py stored          # which indices are cached locally
-python hindenburg.py inspect         # value distribution of the state-table fields
-python hindenburg.py compare         # effect of excluding vs. keeping ST stocks
-python hindenburg.py update --reset-head 000985.CSI   # force a retry of an index's early history
-```
-
-**Environment variables:**
+- **New data, same parameters**: run all three notebooks top to bottom. 01 only fetches what is missing.
+- **Changed parameters**: edit the `Params` / `STRATEGIES` cell at the top of `02_回测`, then run 02 and 03.
+  Breadth series are cached in the database and rebuilt automatically when heavy parameters change.
+- **Why did a given day (not) signal?** Section 7.1 of `02_回测`: `inspect_day('2015-06-29')`.
+- **Keep vs. exclude ST stocks**: section 7.2 of `02_回测` (set `RUN_COMPARE = True`).
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `HO_DATA_DIR` | `data` | Local panel data directory |
-| `HO_OUT_DIR` | `output` | Output directory |
-| `HO_CACHE_DIR` / `HO_INDEX_DIR` | `.cache` / `index_store` | Cache directories |
-| `HO_OFFLINE` | empty | Set to `1` to force local-only mode (no network) |
-| `HO_START` / `HO_END` | `2000-01-01` / last panel date | Default backtest range |
+| `HO_DB_URL` | `postgresql+psycopg://localhost/hindenburg` | Database address |
+| `HO_OFFLINE` | empty | Set to `1` to skip all JoinQuant updates |
+| `HO_LEGACY_DIR` / `HO_LEGACY_INDEX_DIR` | `data` / `index_store` | Legacy files for the one-time import |
+| `HO_PAGES_DIR` | `docs` | Where `03_展示` writes the pages |
 | `JQ_RESERVE` / `JQ_MAX_ROWS` / `JQ_MAX_ROWS_PANEL` | 50000 / 20000 / 500000 | JoinQuant quota guards |
 | `JQ_DRY_RUN` | empty | Set to `1` to print the fetch plan only |
 
 ## FAQ
 
-**"⚠ 尾部 N 个交易日可交易域塌陷" (tradable universe collapsed for the last N days)**: `stock_state.pkl`
-is behind the price panel. Run `python hindenburg.py update-panel`, which updates both files together.
+**"⚠ 尾部 N 个交易日可交易域塌陷" (tradable universe collapsed for the last N days)**: the trading-status
+table is behind the prices. Update both together in `01_数据`.
 
 **Indices start on different dates**: JoinQuant has no data before each index's launch date
 (CSI All Share only from 2011-08; CSI 300/500/1000 from their own launch dates). Each backtest
@@ -187,13 +141,12 @@ simply starts on the first day with data.
 **No signal in 2015**: this is a blind spot of the indicator, not a bug. Condition ② needs the shares of
 new highs and new lows to both be ≥ 2.2% on the same day. At the mid-June top, new highs were 30%–40% of
 stocks while new lows were near zero; once the sell-off began, new highs quickly fell below 1%, and new lows
-only surged on July 7–8, by which time condition ① had already failed. The market went straight from broad
-rally to broad sell-off, and condition ② never held on a single day. Day-by-day data is in section 6 of
-walkthrough.ipynb.
+only surged on July 7–8, by which time condition ① had already failed. Day-by-day data is in section 5.5 of
+`02_回测`.
 
 ## Methodology choices
 
-All parameters live in `config.py`. Where there is more than one reasonable choice:
+All parameters are in the first cell of `02_回测`. Where there is more than one reasonable choice:
 
 | Parameter | Current value | Notes |
 |---|---|---|
@@ -223,9 +176,9 @@ it is empty for the other indices.
 ## Known limitations
 
 - Each index has only 4–14 gradable valid clusters, so hit-rate confidence intervals are wide.
-- `update-panel` only extends stocks **already** in the panel; stocks listed after the panel was built are
+- The incremental price update only extends stocks **already** in the database; stocks listed later are
   not added automatically. They only enter the tradable universe after a year of trading, so the short-term
-  effect is small, but without rebuilding the panel the universe gradually misses newer stocks.
+  effect is small, but over time the universe gradually misses newer stocks.
 - For research only; not investment advice.
 
 ## License

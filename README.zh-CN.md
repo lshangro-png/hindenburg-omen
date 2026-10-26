@@ -6,7 +6,7 @@
 参考：浙商证券《"兴登堡预兆"规避股指下跌的有效性如何？——筹码微观结构探秘系列（九）》（2026-06-26）。
 
 - 📄 **研究报告**：[report/report_zh.md](report/report_zh.md)，完整的方法、结果和结论
-- 📓 **从这里开始**：[walkthrough_zh.ipynb](walkthrough_zh.ipynb)，带图从头到尾走一遍研究过程和结论（[English](walkthrough.ipynb)）
+- 📓 **从这里开始**：[02_回测.ipynb](02_回测.ipynb)，带图从头到尾走一遍研究过程和结论
 - 📊 **在线仪表盘**：https://lshangro-png.github.io/hindenburg-omen/
 - 🎛 **参数实验室**：https://lshangro-png.github.io/hindenburg-omen/lab.html （拖滑块实时重算）
 
@@ -19,8 +19,6 @@
 - 252 日窗口下 ≤ −10% 回撤的基准率高达 85%~100%，各指数命中率与基准率之差在 −7 到 +9 个百分点之间，有正有负。
 - ≤ −20% 口径的超额方向也不一致，而且每个指数可评估的集群只有 4~14 个。
 - 2015 年大顶完全没有信号：市场从普涨直接切到普跌，「新高新低同时大量出现」的条件②一天都没成立。
-
-详细推导见 [walkthrough_zh.ipynb](walkthrough_zh.ipynb)。
 
 ## 指标定义
 
@@ -46,129 +44,84 @@ A 股 252 日窗口下这个数高达 85%~100%，所以除了「命中率 92%」
 
 ## 项目结构
 
+整个项目是三个 notebook，它们之间**通过 PostgreSQL 数据库传数据**：
+
 ```
-.
-├── walkthrough_zh.ipynb  研究走读（中文）：调用下面的模块，从数据到结论完整演示
-├── walkthrough.ipynb  同一份研究走读的英文版
-├── hindenburg.py      命令行入口（update / run / viz / inspect-day ...）
-├── backtest.py        回测核心纯函数：build_signals → build_clusters → evaluate → summarize
-├── config.py          全部参数与策略定义（轻参数 / 重参数分层）
-├── data.py            数据层：价格面板、可交易域、新高新低、McClellan、各级本地缓存
-├── jq_source.py       聚宽数据源（唯一的远端），含额度保护与面板增量更新
-├── viz.py             生成回测仪表盘（中文 dashboard.html / 英文 dashboard_en.html）
-├── lab.py             参数实验室（lab.html / lab_en.html），浏览器里拖滑块实时重算轻参数
-├── export_unadj.py    实验性对照口径：不复权价 + 不过滤可交易域（仅进 lab）
-├── assets/
-│   ├── backtest.js    回测核心的 JS 镜像，与 backtest.py 逐函数对应
-│   ├── common.js      仪表盘和参数实验室共用的前端小工具
-│   ├── i18n.js        页面上所有文字的中英对照表
-│   ├── chart_engine.js  轻量 SVG 图表引擎
-│   └── report.css
-├── report/            研究报告（report_zh.md）及配图
-├── docs/              GitHub Pages：仪表盘和参数实验室的快照
-├── data/              本地数据（不入库，格式见 data/README.md）
-└── output/            运行产出：clusters_*.csv / export_*.json / *.html（不入库）
+01_数据.ipynb   数据：建表 → 一次性导入旧版数据文件 → 用聚宽增量更新
+02_回测.ipynb   回测：读库 → 四个条件 → 集群 → 回撤 → 基准率 → 结果写回数据库，
+                同时带图表和完整讲解（2015 年案例、五指数汇总、诊断工具）
+03_展示.ipynb   展示：从库里读结果 → 生成仪表盘和参数实验室网页到 docs/
+assets/         网页需要的前端文件（图表引擎、回测逻辑的 JS 镜像、中英文对照表、样式）
+docs/           GitHub Pages：中英文仪表盘和参数实验室
+report/         研究报告及配图
 ```
 
-运行时还会生成 `.cache/`（宽度指标缓存）和 `index_store/`（指数收盘 parquet），都不入库。
+| 数据库表 | 由谁写入 | 内容 |
+|---|---|---|
+| `stock_close_adj`、`stock_close_unadj`、`stock_state` | 01 | 个股价格（后复权 / 不复权）和每日交易状态 |
+| `index_close`、`index_meta`、`index_constituents` | 01 | 基准指数收盘价和成分股 |
+| `breadth` | 02 | 各指数的市场宽度序列（缓存，参数或数据变了会自动重算） |
+| `daily` | 02 | 每个指数每天的收盘价、均线、新高新低、McClellan、四个条件、是否信号日 |
+| `clusters`、`hit_vs_base`、`summary`、`strategy_info`、`index_pre` | 02 | 集群与回撤、命中率与基准率、汇总统计、参数 |
+
+用 Tableau 做图时直接连这个数据库，用 `daily`、`clusters`、`hit_vs_base` 三张表即可。
 
 ## 安装
 
-```bash
-pip install -r requirements.txt
-```
+1. 安装 PostgreSQL 并建库（macOS + Homebrew）：
 
-数据准备见 [data/README.md](data/README.md)。
+   ```bash
+   brew install postgresql@17
+   ```
 
-聚宽账号（可选，不配也能跑纯本地模式），**只通过环境变量提供，不要写进代码或 README**：
+   ```bash
+   brew services start postgresql@17
+   ```
+
+   ```bash
+   /opt/homebrew/opt/postgresql@17/bin/createdb hindenburg
+   ```
+
+2. 安装 Python 依赖：
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. 按顺序运行 notebook：`01_数据` → `02_回测` → `03_展示`。
+
+数据库地址默认是 `postgresql+psycopg://localhost/hindenburg`（本机连接不需要密码），要换成别的地址就设置环境变量 `HO_DB_URL`。
+
+聚宽账号只在更新数据时需要，**只通过环境变量提供，不要写进 notebook 或 README**：
 
 ```bash
 export JQ_USER=你的账号
 export JQ_PASSWORD=你的密码
 ```
 
+第一次运行 `01_数据` 时，会从 `HO_LEGACY_DIR` / `HO_LEGACY_INDEX_DIR` 指定的目录导入旧版数据文件
+（`stock_price_adj_close.pkl`、`stock_state.pkl`、`index_constituents_*.pkl`、`index_store/*.parquet`），
+格式见 [data/README.md](data/README.md)。
+
 ## 使用
 
-**日常更新（只更新数据，没改参数）：**
+- **只更新数据、没改参数**：三个 notebook 从头到尾运行一遍。01 只会拉缺少的部分。
+- **改了参数**：改 `02_回测` 开头的 `Params` / `STRATEGIES`，然后运行 02 和 03。宽度序列缓存在数据库里，改了重参数会自动重算。
+- **排查某天为什么没信号**：`02_回测` 第 7.1 节，`inspect_day('2015-06-29')`。
+- **对比剔不剔 ST**：`02_回测` 第 7.2 节（把 `RUN_COMPARE` 设为 `True`）。
 
-```bash
-python hindenburg.py update-panel    # 价格面板 + 状态表更新到最新交易日
-python hindenburg.py run             # 跑回测，打印结果，写 output/clusters_*.csv
-python hindenburg.py viz             # 生成 output/dashboard.html 和 dashboard_en.html
-```
-
-不需要 `clear-cache`，因为缓存键里带了数据文件的修改时间，数据一更新缓存就自动失效重算。
-
-**改过 `config.py` 参数之后：**
-
-```bash
-python hindenburg.py clear-cache
-python hindenburg.py run
-python hindenburg.py viz
-```
-
-**只跑一个标的：**
-
-```bash
-python hindenburg.py run --strategy ashare
-# 可选：ashare(中证全指) / general(上证综指) / 300 / 500 / 1000
-```
-
-**只重新生成页面、不重跑回测：**
-
-```bash
-python hindenburg.py viz --reuse     # 直接用上次导出的 JSON
-```
-
-**参数实验室**（拖滑块实时看结果，不用重跑）：
-
-```bash
-python hindenburg.py export
-python lab.py                        # 生成 output/lab.html 和 lab_en.html
-```
-
-**「不复权价 + 不过滤」实验性对照口径**（只在参数实验室里能看到，不进 dashboard；
-这不是本项目认可的正式口径，只作对照）：
-
-```bash
-python export_unadj.py data
-python lab.py
-```
-
-**排查某天为什么没信号：**
-
-```bash
-python hindenburg.py inspect-day 2015-06-29 --strategy ashare
-```
-
-会把那几天四个条件的原始值全部打印出来，能直接看出卡在哪个条件。
-
-**其他命令：**
-
-```bash
-python hindenburg.py quota           # 查聚宽剩余额度
-python hindenburg.py stored          # 查本地缓存了哪些指数
-python hindenburg.py inspect         # 查状态表字段分布
-python hindenburg.py compare         # 对比剔 ST / 不剔 ST 的影响
-python hindenburg.py update --reset-head 000985.CSI   # 强制重试拉取指数历史
-```
-
-**环境变量：**
-
-| 变量 | 默认 | 说明 |
+| 环境变量 | 默认 | 说明 |
 |---|---|---|
-| `HO_DATA_DIR` | `data` | 本地面板数据目录 |
-| `HO_OUT_DIR` | `output` | 结果输出目录 |
-| `HO_CACHE_DIR` / `HO_INDEX_DIR` | `.cache` / `index_store` | 缓存目录 |
-| `HO_OFFLINE` | 空 | 设为 `1` 强制纯本地，不联网 |
-| `HO_START` / `HO_END` | `2000-01-01` / 面板最后一天 | 默认回测区间 |
+| `HO_DB_URL` | `postgresql+psycopg://localhost/hindenburg` | 数据库地址 |
+| `HO_OFFLINE` | 空 | 设为 `1` 跳过所有聚宽更新 |
+| `HO_LEGACY_DIR` / `HO_LEGACY_INDEX_DIR` | `data` / `index_store` | 一次性导入用的旧版数据目录 |
+| `HO_PAGES_DIR` | `docs` | `03_展示` 输出网页的目录 |
 | `JQ_RESERVE` / `JQ_MAX_ROWS` / `JQ_MAX_ROWS_PANEL` | 50000 / 20000 / 500000 | 聚宽额度保护 |
 | `JQ_DRY_RUN` | 空 | 设为 `1` 只打印拉取计划 |
 
 ## 常见情况
 
-**「⚠ 尾部 N 个交易日可交易域塌陷」**：`stock_state.pkl` 落后于价格面板了，
-跑 `python hindenburg.py update-panel`，两个文件会一起更新。
+**「⚠ 尾部 N 个交易日可交易域塌陷」**：交易状态表落后于价格了，在 `01_数据` 里两个一起更新。
 
 **各标的起点不一样**：聚宽没有指数发布日之前的数据（中证全指只到 2011-08，
 300/500/1000 都从各自发布日开始）。回测会自动从有数据的第一天开始。
@@ -176,11 +129,11 @@ python hindenburg.py update --reset-head 000985.CSI   # 强制重试拉取指数
 **2015 年没信号**：这是指标本身的盲区，不是算错了。条件②要求新高、新低占比同一天都 ≥ 2.2%：
 6 月中旬顶部时新高占比 30%~40%，新低几乎为 0；下跌开始后新高很快掉到 1% 以下，
 而新低直到 7 月 7~8 日才大量出现，那时条件①也已失效。普涨直接切到普跌，条件②一天都没成立。
-逐日数据见 walkthrough_zh.ipynb 第 6 节。
+逐日数据见 `02_回测` 第 5.5 节。
 
 ## 参数口径
 
-全部参数在 `config.py`。几个有多种选法的地方：
+全部参数在 `02_回测` 的第一格。几个有多种选法的地方：
 
 | 参数 | 当前值 | 说明 |
 |---|---|---|
@@ -209,8 +162,8 @@ python hindenburg.py update --reset-head 000985.CSI   # 强制重试拉取指数
 ## 已知局限
 
 - 每个指数可评估的有效集群只有 4~14 个，命中率的置信区间很宽。
-- `update-panel` 只给面板里**已有的**股票续数据，面板建好之后新上市的股票不会自动加列。
-  它们上市满一年才会进可交易域，所以短期影响有限，但长期不重建面板会让股票池逐渐缺新股。
+- 价格增量更新只给库里**已有的**股票续数据，之后新上市的股票不会自动加入。
+  它们上市满一年才会进可交易域，所以短期影响有限，但时间长了股票池会逐渐缺新股。
 - 本项目仅供研究，不构成投资建议。
 
 ## License

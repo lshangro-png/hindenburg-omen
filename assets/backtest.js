@@ -1,11 +1,11 @@
 /* ============================================================
    backtest.js —— 回测核心的 JS 镜像
 
-   逐行对应 hindenburg.py 里的 build_signals / build_clusters /
+   逐行对应 02_回测.ipynb 里的 build_signals / build_clusters /
    evaluate / summarize。参数实验室靠它在浏览器里
    重算轻参数, 不需要重跑 Python。
 
-   能重算的只有轻参数(见 config.py 的 LIGHT_KEYS): 四条件判定用的
+   能重算的只有轻参数(见 02_回测.ipynb 的 LIGHT_KEYS): 四条件判定用的
    阈值、集群窗口、评级分界。重参数(EMA周期/52周窗口/可交易域规则)
    决定的是 mcclellan、high_ratio 这些输入序列本身, 浏览器里没有
    全市场股票面板, 算不出来, 必须重跑 Python。
